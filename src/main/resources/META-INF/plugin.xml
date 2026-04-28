@@ -1,0 +1,222 @@
+<idea-plugin>
+    <id>com.claudecode.intellij</id>
+    <name>Claude Code</name>
+    <vendor email="support@example.com" url="https://github.com/anthropics/claude-code">Claude Code</vendor>
+
+    <description><![CDATA[
+    <h2>Claude Code for IntelliJ</h2>
+    <p>
+        Bring the full power of Claude Code directly into your IDE. Chat with Claude in a side panel,
+        run multiple sessions in parallel, and let Claude read, edit, and create files in your project —
+        all without leaving IntelliJ.
+    </p>
+
+    <h3>Chat Panel</h3>
+    <ul>
+        <li>Side panel with multiple parallel Claude Code sessions</li>
+        <li>Project-aware: Claude works in your open project's directory</li>
+        <li>Session memory: Claude remembers context across messages</li>
+        <li>Markdown rendering with syntax-highlighted code blocks</li>
+        <li>Tool-use indicators with colored status signals and diff summaries</li>
+        <li>Clickable file links for every file Claude creates or modifies</li>
+        <li>Changed files summary after each response, grouped by folder</li>
+        <li>Copy and re-edit buttons on messages and code blocks</li>
+    </ul>
+
+    <h3>Right-Click Context Menu</h3>
+    <ul>
+        <li><b>Explain with Claude</b> — understand code, methods, or entire files</li>
+        <li><b>Refactor with Claude</b> — get suggestions for readability, performance, and best practices</li>
+        <li><b>Generate Tests with Claude</b> — create unit tests for selected code or whole files</li>
+        <li><b>Fix with Claude</b> — identify and fix bugs in selected code</li>
+    </ul>
+    <p>Works from both the editor (selected code or full file) and the project tree (file-level actions).</p>
+
+    <h3>Productivity</h3>
+    <ul>
+        <li>Model selection: choose between Opus, Sonnet, and Haiku</li>
+        <li>Keyboard shortcut: <b>Cmd+Shift+I</b> (macOS) / <b>Ctrl+Shift+I</b> (Windows/Linux)</li>
+        <li>Stop requests with Escape or double Ctrl+C / Cmd+C</li>
+        <li>Auto-accept file changes or require manual approval</li>
+        <li>Project tree auto-refreshes when Claude creates or modifies files</li>
+        <li>Cost tracking per response</li>
+        <li>Experimental inline code completion (opt-in)</li>
+    </ul>
+
+    <h3>Prerequisites</h3>
+    <ul>
+        <li>Install the Claude CLI: <code>npm install -g @anthropic-ai/claude-code</code></li>
+        <li>Authenticate by running <code>claude</code> in a terminal</li>
+    </ul>
+    ]]></description>
+
+    <change-notes><![CDATA[
+    <h3>0.1.0</h3>
+    <ul>
+        <li>Initial release</li>
+        <li>Multi-session chat panel with Claude Code CLI</li>
+        <li>Right-click actions: Explain, Refactor, Generate Tests, Fix</li>
+        <li>Editor and project tree context menu integration</li>
+        <li>Markdown rendering with syntax highlighting</li>
+        <li>Clickable file links and changed files summary</li>
+        <li>Copy/edit buttons on messages and code blocks</li>
+        <li>Model selection and cost tracking</li>
+        <li>Welcome page with feature overview</li>
+    </ul>
+    ]]></change-notes>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool Window -->
+        <toolWindow id="Claude Code"
+                    anchor="right"
+                    icon="/icons/claude.svg"
+                    factoryClass="com.claudecode.toolwindow.ClaudeToolWindowFactory"/>
+
+        <!-- Settings -->
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.claudecode.settings.ClaudeSettingsConfigurable"
+                id="com.claudecode.settings"
+                displayName="Claude Code"/>
+
+        <applicationService
+                serviceImplementation="com.claudecode.settings.ClaudeSettings"/>
+
+        <!-- Completion -->
+        <completion.contributor
+                language="any"
+                implementationClass="com.claudecode.completion.ClaudeCompletionContributor"
+                order="last"/>
+    </extensions>
+
+    <actions>
+        <!-- Editor right-click context menu -->
+        <group id="ClaudeCode.EditorContextMenu"
+               text="Claude Code"
+               icon="/icons/claude.svg"
+               popup="true">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+
+            <action id="ClaudeCode.RefactorSelection"
+                    class="com.claudecode.actions.RefactorWithClaudeAction"
+                    text="Refactor with Claude"
+                    description="Refactor selected code using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.ExplainSelection"
+                    class="com.claudecode.actions.ExplainWithClaudeAction"
+                    text="Explain with Claude"
+                    description="Explain selected code or entire file using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.AddTests"
+                    class="com.claudecode.actions.AddTestsWithClaudeAction"
+                    text="Generate Tests with Claude"
+                    description="Generate unit tests for selected code or entire file using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.FixError"
+                    class="com.claudecode.actions.FixErrorWithClaudeAction"
+                    text="Fix with Claude"
+                    description="Fix errors in selected code using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <separator/>
+
+            <action id="ClaudeCode.SendToClaudeEditor"
+                    class="com.claudecode.actions.SendToClaudeAction"
+                    text="Send to Claude"
+                    description="Send selected text or file as context to Claude"
+                    icon="/icons/claude.svg"/>
+        </group>
+
+        <!-- Project view (file tree) right-click context menu -->
+        <group id="ClaudeCode.ProjectViewContextMenu"
+               text="Claude Code"
+               icon="/icons/claude.svg"
+               popup="true">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+
+            <action id="ClaudeCode.ExplainFile"
+                    class="com.claudecode.actions.ExplainFileWithClaudeAction"
+                    text="Explain with Claude"
+                    description="Explain this file using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.GenerateTestsFile"
+                    class="com.claudecode.actions.GenerateTestsFileWithClaudeAction"
+                    text="Generate Tests with Claude"
+                    description="Generate unit tests for this file using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.RefactorFile"
+                    class="com.claudecode.actions.RefactorFileWithClaudeAction"
+                    text="Refactor with Claude"
+                    description="Suggest refactoring improvements for this file using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.GenerateTestsFolder"
+                    class="com.claudecode.actions.GenerateTestsFolderWithClaudeAction"
+                    text="Generate Tests for Folder with Claude"
+                    description="Generate unit tests for all source files in this folder using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <separator/>
+
+            <action id="ClaudeCode.SendToClaudeFile"
+                    class="com.claudecode.actions.SendFileToClaudeAction"
+                    text="Send to Claude"
+                    description="Send this file as context to Claude"
+                    icon="/icons/claude.svg"/>
+        </group>
+
+        <!-- Console right-click context menu (Run/Debug console output) -->
+        <group id="ClaudeCode.ConsoleContextMenu"
+               text="Claude Code"
+               icon="/icons/claude.svg"
+               popup="true">
+            <add-to-group group-id="ConsoleView.PopupMenu" anchor="last"/>
+
+            <action id="ClaudeCode.DebugException"
+                    class="com.claudecode.actions.DebugExceptionWithClaudeAction"
+                    text="Debug with Claude"
+                    description="Debug exceptions and errors using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.ExplainConsole"
+                    class="com.claudecode.actions.ExplainConsoleWithClaudeAction"
+                    text="Explain with Claude"
+                    description="Explain log flow and trace execution path using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <separator/>
+
+            <action id="ClaudeCode.SendConsoleToClaudeAction"
+                    class="com.claudecode.actions.SendConsoleToClaudeAction"
+                    text="Send to Claude"
+                    description="Send selected console output to Claude"
+                    icon="/icons/claude.svg"/>
+        </group>
+
+        <!-- New session action in tool window -->
+        <action id="ClaudeCode.NewSession"
+                class="com.claudecode.actions.NewSessionAction"
+                text="New Claude Session"
+                description="Start a new Claude Code session"
+                icon="AllIcons.General.Add"/>
+
+        <!-- Toggle Claude Code panel -->
+        <action id="ClaudeCode.Toggle"
+                class="com.claudecode.actions.ToggleClaudeAction"
+                text="Toggle Claude Code"
+                description="Open or focus the Claude Code panel"
+                icon="/icons/claude.svg">
+            <keyboard-shortcut keymap="$default" first-keystroke="shift control I"/>
+            <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="shift meta I"/>
+            <add-to-group group-id="ToolsMenu" anchor="first"/>
+        </action>
+    </actions>
+</idea-plugin>

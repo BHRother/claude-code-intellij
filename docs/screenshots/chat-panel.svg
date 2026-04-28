@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="620" font-family="'JetBrains Mono', 'Menlo', 'Consolas', monospace" font-size="12">
+  <defs>
+    <filter id="shadow" x="-3%" y="-2%" width="106%" height="106%">
+      <feDropShadow dx="0" dy="1" stdDeviation="3" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- Panel background -->
+  <rect width="460" height="620" fill="#1E1F22"/>
+
+  <!-- Title bar -->
+  <rect width="460" height="32" fill="#2B2D30"/>
+  <text x="12" y="21" fill="#BCBEC4" font-size="12" font-weight="bold">Claude Code</text>
+  <!-- Tab -->
+  <rect x="110" y="4" width="120" height="24" rx="4" fill="#1E1F22"/>
+  <text x="122" y="20" fill="#BCBEC4" font-size="11">Refactor code</text>
+  <text x="218" y="20" fill="#808080" font-size="11">×</text>
+  <!-- + button -->
+  <rect x="240" y="6" width="20" height="20" rx="4" fill="#3C3F41"/>
+  <text x="245" y="20" fill="#BCBEC4" font-size="14">+</text>
+
+  <!-- Model bar -->
+  <rect y="32" width="460" height="24" fill="#2B2D30"/>
+  <text x="12" y="48" fill="#D97757" font-size="11">Model: sonnet-4-6</text>
+
+  <!-- Chat content area -->
+  <!-- User message -->
+  <rect x="8" y="68" width="444" height="38" rx="4" fill="#2B2D30"/>
+  <text x="16" y="85" fill="#6897BB" font-size="12">Refactor this method to use streams</text>
+  <text x="340" y="85" fill="#6897BB" font-size="10" text-decoration="underline">[copy]</text>
+  <text x="378" y="85" fill="#6897BB" font-size="10" text-decoration="underline">[edit]</text>
+
+  <!-- Tool use messages -->
+  <text x="16" y="128" fill="#D97757" font-size="12" font-style="italic">
+    <tspan fill="#6897BB">⏺</tspan> Read(src/Main.java)
+  </text>
+
+  <text x="16" y="152" fill="#D97757" font-size="12" font-style="italic">
+    <tspan fill="#D9B263">⏺</tspan> Update(src/Main.java)
+  </text>
+  <text x="32" y="170" fill="#808080" font-size="11">⎿ Added 5 lines, removed 8 lines</text>
+
+  <!-- Claude response -->
+  <text x="16" y="200" fill="#BCBEC4" font-size="12">I've refactored the method to use Java streams.</text>
+  <text x="16" y="220" fill="#BCBEC4" font-size="12">Here are the key changes:</text>
+
+  <!-- Code block -->
+  <rect x="12" y="235" width="436" height="130" rx="4" fill="#2B2D30"/>
+  <text x="20" y="253" fill="#808080" font-size="11">java</text>
+  <text x="396" y="253" fill="#6897BB" font-size="10" text-decoration="underline">[copy]</text>
+
+  <text x="20" y="275" fill="#CC7832" font-size="11.5">public</text>
+  <text x="64" y="275" fill="#BCBEC4" font-size="11.5"> List&lt;String&gt; </text>
+  <text x="162" y="275" fill="#BCBEC4" font-size="11.5">getNames() {</text>
+
+  <text x="20" y="295" fill="#CC7832" font-size="11.5">    return</text>
+  <text x="82" y="295" fill="#BCBEC4" font-size="11.5"> items.stream()</text>
+
+  <text x="20" y="315" fill="#BCBEC4" font-size="11.5">        .map(Item::getName)</text>
+
+  <text x="20" y="335" fill="#BCBEC4" font-size="11.5">        .collect(Collectors.toList());</text>
+
+  <text x="20" y="355" fill="#BCBEC4" font-size="11.5">}</text>
+
+  <!-- Changed files summary -->
+  <rect x="12" y="380" width="436" height="60" rx="4" fill="#1E1F22" stroke="#3C3F41" stroke-width="0.5"/>
+  <text x="20" y="400" fill="#808080" font-size="12" font-weight="bold">Changed files:</text>
+  <text x="20" y="418" fill="#808080" font-size="11">src/</text>
+  <text x="40" y="434" fill="#D9B263" font-size="11">[Modified]</text>
+  <text x="110" y="434" fill="#6897BB" font-size="11" text-decoration="underline">Main.java</text>
+
+  <!-- Cost -->
+  <text x="16" y="462" fill="#808080" font-size="11" font-style="italic">Ready | $0.0142</text>
+
+  <!-- Separator -->
+  <line x1="0" y1="475" x2="460" y2="475" stroke="#3C3F41" stroke-width="1"/>
+
+  <!-- Thinking indicator (hidden) -->
+
+  <!-- Input area -->
+  <rect x="8" y="483" width="390" height="60" rx="4" fill="#2B2D30" stroke="#3C3F41" stroke-width="0.5"/>
+  <text x="16" y="510" fill="#808080" font-size="12">Ask Claude something...</text>
+
+  <!-- Send button -->
+  <rect x="406" y="483" width="44" height="32" rx="4" fill="#3C3F41"/>
+  <text x="414" y="504" fill="#BCBEC4" font-size="12">Send</text>
+
+  <!-- Status bar -->
+  <text x="12" y="565" fill="#808080" font-size="10">Ready</text>
+  <text x="240" y="565" fill="#606060" font-size="10">Enter to send, Shift+Enter for newline, Cmd+C×2 to stop</text>
+
+  <!-- Debug area -->
+  <rect x="0" y="575" width="460" height="45" fill="#151518"/>
+  <text x="8" y="590" fill="#707070" font-size="9.5">claude-session-a1b2: Completed in 3.2s | cost: $0.0142 | 2 turns</text>
+  <text x="8" y="605" fill="#707070" font-size="9.5">claude-session-a1b2: Process exited: finished=true code=0</text>
+</svg>
