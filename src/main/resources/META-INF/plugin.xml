@@ -1,6 +1,6 @@
 <idea-plugin>
     <id>com.claudecode.plugin</id>
-    <name>Claude Code</name>
+    <name>Claude Code Chat</name>
     <vendor email="brcoder.support@gmail.com" url="https://github.com/BHRother/claude-code-intellij">IntelliJ Claude Code Plugin</vendor>
 
     <description><![CDATA[
