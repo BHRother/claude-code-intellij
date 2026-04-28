@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.claudecode.intellij</id>
     <name>Claude Code</name>
-    <vendor email="support@example.com" url="https://github.com/anthropics/claude-code">Claude Code</vendor>
+    <vendor email="brcoder.support@gmail.com" url="https://github.com/BHRother/claude-code-intellij">IntelliJ Claude Code Plugin</vendor>
 
     <description><![CDATA[
     <h2>Claude Code for IntelliJ</h2>
@@ -51,6 +51,23 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.0.0</h3>
+    <ul>
+        <li><b>Console integration</b> — right-click in Run/Debug console to debug exceptions, explain log flows, or send output to Claude</li>
+        <li><b>Folder-level test generation</b> — generate tests for all source files in a directory (supports 14+ languages)</li>
+        <li><b>Inline code completion</b> — experimental Claude-powered code suggestions triggered while typing (opt-in)</li>
+        <li><b>Send to Claude</b> — send selected code, files, or console output as context from any right-click menu</li>
+        <li><b>Interactive permission prompts</b> — Allow/Deny buttons in the chat panel for Claude's file operations</li>
+        <li><b>Inline diffs</b> — expandable diff viewers showing old vs. new code for every edit Claude makes</li>
+        <li><b>Edit consolidation</b> — consecutive edits to the same file are grouped into a single entry with cumulative diffs</li>
+        <li><b>Thinking display</b> — real-time indicator showing Claude's reasoning when extended thinking is active</li>
+        <li><b>Debug log panel</b> — collapsible panel for inspecting internal session operations</li>
+        <li><b>Session auto-naming</b> — sessions are automatically named based on the first message</li>
+        <li><b>Auto-accept permissions setting</b> — configure whether file operations require manual approval</li>
+        <li><b>File deletion tracking</b> — detects and displays files deleted via Bash commands</li>
+        <li><b>Model info in header</b> — active model name shown in each response header</li>
+    </ul>
+
     <h3>0.1.0</h3>
     <ul>
         <li>Initial release</li>

@@ -68,11 +68,11 @@ Configurable via **Settings → Tools → Claude Code**:
 
 ### Build from source
 ```bash
-git clone <repo-url>
+git clone https://github.com/BHRother/claude-code-intellij
 cd claude-code-intellij
 ./gradlew buildPlugin
 ```
-The plugin zip will be at `build/distributions/claude-code-intellij-0.1.0.zip`.
+The plugin zip will be at `build/distributions/claude-code-intellij-<version>.zip`.
 
 ## Platform Support
 

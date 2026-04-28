@@ -12,6 +12,7 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
@@ -39,6 +40,20 @@ class ClaudeToolWindowManager(
     init {
         sessionManager.addListener(this)
         setupToolbar()
+
+        project.messageBus.connect(this).subscribe(
+            ToolWindowManagerListener.TOPIC,
+            object : ToolWindowManagerListener {
+                override fun toolWindowShown(tw: ToolWindow) {
+                    if (tw == toolWindow) {
+                        SwingUtilities.invokeLater {
+                            val panel = toolWindow.contentManager.selectedContent?.component as? SessionPanel
+                            panel?.focusInput()
+                        }
+                    }
+                }
+            }
+        )
 
         // Handle tab close
         toolWindow.contentManager.addContentManagerListener(object : ContentManagerListener {
