@@ -8,7 +8,7 @@ import javax.swing.JComponent
 class ClaudeSettingsConfigurable : Configurable {
 
     private var panel: DialogPanel? = null
-    private val settings = ClaudeSettings.getInstance()
+    private val settings by lazy { ClaudeSettings.getInstance() }
 
     override fun getDisplayName(): String = com.claudecode.ClaudeConstants.TOOL_WINDOW_ID
 

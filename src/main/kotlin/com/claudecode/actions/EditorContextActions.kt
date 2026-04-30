@@ -58,22 +58,51 @@ abstract class BaseClaudeEditorAction(
 }
 
 class RefactorWithClaudeAction : BaseClaudeEditorAction(
-    selectionPrompt = "Refactor the following code. Suggest improvements for readability, performance, and best practices.",
+    selectionPrompt = """Refactor this code. For each change:
+1. Show the refactored code
+2. Explain what changed and why it's better
+
+Focus on: readability, reducing complexity, eliminating duplication, and following idiomatic conventions for the language. Don't change external behavior. Prioritize impactful improvements over cosmetic ones.""",
     filePrompt = null
 )
 
 class ExplainWithClaudeAction : BaseClaudeEditorAction(
-    selectionPrompt = "Explain the following code in detail. What does it do, and why?",
-    filePrompt = "Explain this file in detail. What does it do, what are the key classes/methods, and why is it structured this way?"
+    selectionPrompt = """Explain this code:
+1. **Purpose** — what problem it solves and when it runs
+2. **How it works** — walk through the logic step by step
+3. **Key decisions** — any non-obvious patterns, trade-offs, or edge cases handled
+
+Be concise. Skip obvious details a developer reading the code would already understand.""",
+    filePrompt = """Read this file and explain it:
+1. **Purpose** — what this file is responsible for in the project
+2. **Key components** — the main classes, functions, configurations, or resources it defines
+3. **How it fits** — how it connects to or is used by other parts of the codebase
+4. **Notable details** — any non-obvious patterns, edge cases, or important design decisions
+
+Adapt the explanation to the file type (source code, config, infrastructure, build file, etc.)."""
 )
 
 class AddTestsWithClaudeAction : BaseClaudeEditorAction(
-    selectionPrompt = "Generate comprehensive unit tests for the following code.",
-    filePrompt = "Generate comprehensive unit tests for all the public methods in this file."
+    selectionPrompt = """Generate unit tests for this code:
+1. Use the same test framework and conventions already used in this project
+2. Cover: happy path, edge cases, error conditions, and boundary values
+3. Use descriptive test names that explain the scenario being tested
+4. Each test should be independent and test one behavior""",
+    filePrompt = """Read this file and generate unit tests for its public API:
+1. Detect and use the same test framework and conventions already used in this project
+2. Cover: happy path, edge cases, error conditions, and boundary values
+3. Use descriptive test names that explain the scenario being tested
+4. Each test should be independent and test one behavior
+5. Group tests logically by the method or behavior they cover"""
 )
 
 class FixErrorWithClaudeAction : BaseClaudeEditorAction(
-    selectionPrompt = "Identify and fix any bugs or errors in the following code.",
+    selectionPrompt = """Analyze this code for bugs, errors, and potential issues. For each problem found:
+1. **Bug** — describe the issue and how it manifests
+2. **Cause** — explain why it happens
+3. **Fix** — show the corrected code
+
+If no bugs are found, note any fragile patterns that could break under edge cases.""",
     filePrompt = null
 )
 

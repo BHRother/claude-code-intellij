@@ -51,6 +51,14 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.0.1</h3>
+    <ul>
+        <li><b>Explain Folder</b> — right-click any folder in the project tree to get a hierarchical summary of its contents, with breakdowns for each sub-folder up to 2 levels deep</li>
+        <li><b>File-type agnostic explanations</b> — Explain works on any file type (Dockerfile, YAML, Kubernetes manifests, build files, etc.), not just source code</li>
+        <li><b>Improved prompts</b> — all right-click action prompts rewritten with structured output format, better guidance for test generation (matches project conventions), and concrete code in refactor/fix results</li>
+        <li><b>Settings crash fix</b> — fixed a NullPointerException that occurred when opening Settings during plugin unload</li>
+    </ul>
+
     <h3>1.0.0</h3>
     <ul>
         <li><b>Console integration</b> — right-click in Run/Debug console to debug exceptions, explain log flows, or send output to Claude</li>
@@ -161,6 +169,12 @@
                     class="com.claudecode.actions.ExplainFileWithClaudeAction"
                     text="Explain with Claude"
                     description="Explain this file using Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.ExplainFolder"
+                    class="com.claudecode.actions.ExplainFolderWithClaudeAction"
+                    text="Explain Folder with Claude"
+                    description="Explain the functionality of all code in this folder and its sub-folders using Claude"
                     icon="/icons/claude.svg"/>
 
             <action id="ClaudeCode.GenerateTestsFile"

@@ -35,13 +35,11 @@ abstract class BaseClaudeConsoleAction(
 }
 
 class DebugExceptionWithClaudeAction : BaseClaudeConsoleAction(
-    """Analyze the following console output. Focus on exceptions and errors.
+    """Analyze this console output. Focus on exceptions and errors.
 
-1. **Execution Flow**: Trace the execution path that led to the error. For each step, show: `ClassName.methodName()` (line N). Present as a numbered sequence.
-
-2. **Root Cause**: Explain what went wrong and why.
-
-3. **Fix**: Suggest a concrete fix with code if possible."""
+1. **Execution Flow** — trace the path that led to the error as a numbered sequence: `ClassName.methodName()` (line N). Skip framework internals that don't add insight.
+2. **Root Cause** — explain what went wrong, why, and under what conditions it triggers.
+3. **Fix** — show the corrected code. If the root cause is ambiguous, list the most likely candidates with a fix for each."""
 )
 
 class ExplainConsoleWithClaudeAction : BaseClaudeConsoleAction(

@@ -98,6 +98,22 @@ class FileContextActionsInstantiationTest {
     }
 
     @Nested
+    inner class ExplainFolderAction {
+        @Test
+        fun `can be instantiated`() {
+            assertNotNull(ExplainFolderWithClaudeAction())
+        }
+
+        @Test
+        fun `uses BGT`() {
+            assertEquals(
+                com.intellij.openapi.actionSystem.ActionUpdateThread.BGT,
+                ExplainFolderWithClaudeAction().actionUpdateThread
+            )
+        }
+    }
+
+    @Nested
     inner class GenerateTestsFolderAction {
         @Test
         fun `can be instantiated`() {
