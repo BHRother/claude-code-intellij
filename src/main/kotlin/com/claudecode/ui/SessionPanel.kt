@@ -26,6 +26,8 @@ class SessionPanel(
 ) : JPanel(BorderLayout()), SessionListener {
 
     private lateinit var outputPane: JTextPane
+    private lateinit var outputScrollPane: JBScrollPane
+    private lateinit var jumpToBottomButton: JButton
     private lateinit var inputArea: PasteAwareInputArea
     private val sendStopButton: JButton
     private val statusLabel: JLabel
@@ -133,7 +135,9 @@ class SessionPanel(
                 }
             """.trimIndent())
             editorKit = kit
-            (caret as? DefaultCaret)?.updatePolicy = DefaultCaret.ALWAYS_UPDATE
+            // Don't drag the viewport with the caret — appendHtml decides
+            // whether to auto-scroll based on the user's current position.
+            (caret as? DefaultCaret)?.updatePolicy = DefaultCaret.NEVER_UPDATE
             addHyperlinkListener { e ->
                 if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) {
                     val href = e.description ?: return@addHyperlinkListener
@@ -172,9 +176,54 @@ class SessionPanel(
             }
         }
 
-        val scrollPane = JBScrollPane(outputPane).apply {
+        outputScrollPane = JBScrollPane(outputPane).apply {
             border = JBUI.Borders.empty()
             verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+        }
+
+        jumpToBottomButton = JButton("↓ Jump to latest").apply {
+            font = monoFont.deriveFont(11f)
+            toolTipText = "Scroll to the latest message"
+            isFocusable = false
+            isVisible = false
+            isOpaque = true
+            margin = JBUI.emptyInsets()
+            background = JBColor(Color(0x3C, 0x3F, 0x41), Color(0x3C, 0x3F, 0x41))
+            foreground = JBColor(Color(0xBC, 0xBE, 0xC4), Color(0xBC, 0xBE, 0xC4))
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor(Color(0x50, 0x53, 0x56), Color(0x50, 0x53, 0x56)), 1, true),
+                JBUI.Borders.empty(4, 10)
+            )
+            addActionListener { scrollOutputToBottom() }
+        }
+
+        // Layered container places the floating "jump to latest" button on top
+        // of the scroll pane. The button only appears when the user has
+        // scrolled away from the bottom.
+        val outputOverlay = object : JLayeredPane() {
+            override fun doLayout() {
+                outputScrollPane.setBounds(0, 0, width, height)
+                if (jumpToBottomButton.isVisible) {
+                    val pref = jumpToBottomButton.preferredSize
+                    val margin = 12
+                    val sbWidth = if (outputScrollPane.verticalScrollBar.isVisible)
+                        outputScrollPane.verticalScrollBar.width else 0
+                    jumpToBottomButton.setBounds(
+                        width - pref.width - margin - sbWidth,
+                        height - pref.height - margin,
+                        pref.width,
+                        pref.height
+                    )
+                }
+            }
+            override fun getPreferredSize(): Dimension = outputScrollPane.preferredSize
+        }.apply {
+            add(outputScrollPane, JLayeredPane.DEFAULT_LAYER, 0)
+            add(jumpToBottomButton, JLayeredPane.PALETTE_LAYER, 0)
+        }
+
+        outputScrollPane.verticalScrollBar.addAdjustmentListener {
+            updateJumpToBottomVisibility()
         }
 
         thinkingLabel = JLabel("").apply {
@@ -326,7 +375,7 @@ class SessionPanel(
         }
 
         add(modelLabel, BorderLayout.NORTH)
-        add(scrollPane, BorderLayout.CENTER)
+        add(outputOverlay, BorderLayout.CENTER)
         add(bottomPanel, BorderLayout.SOUTH)
 
         session.addListener(this)
@@ -798,6 +847,7 @@ class SessionPanel(
     }
 
     private fun appendHtml(html: String) {
+        val wasAtBottom = isOutputAtBottom()
         val doc = outputPane.document
         val kit = outputPane.editorKit as HTMLEditorKit
         try {
@@ -807,9 +857,46 @@ class SessionPanel(
                 html,
                 0, 0, null
             )
-            outputPane.caretPosition = doc.length
         } catch (e: Exception) {
             outputPane.text = (outputPane.text ?: "") + html
+        }
+        if (wasAtBottom) {
+            scrollOutputToBottom()
+        } else {
+            // User has scrolled away — surface the jump button so they can
+            // come back when they want.
+            updateJumpToBottomVisibility()
+        }
+    }
+
+    /**
+     * True when the user is at (or within a small tolerance of) the bottom of
+     * the output. The tolerance handles mouse-wheel imprecision and the few
+     * pixels that incremental layout may leave between
+     * `value + visibleAmount` and `maximum`.
+     */
+    private fun isOutputAtBottom(tolerancePx: Int = 40): Boolean {
+        val sb = outputScrollPane.verticalScrollBar
+        // Empty / not yet sized: treat as "at bottom" so initial appends scroll.
+        if (sb.maximum == 0 || sb.visibleAmount >= sb.maximum) return true
+        return sb.value + sb.visibleAmount >= sb.maximum - tolerancePx
+    }
+
+    private fun scrollOutputToBottom() {
+        // Defer to after the document layout settles; HTML insertion updates
+        // sizes asynchronously through the view hierarchy.
+        SwingUtilities.invokeLater {
+            val sb = outputScrollPane.verticalScrollBar
+            sb.value = sb.maximum
+        }
+    }
+
+    private fun updateJumpToBottomVisibility() {
+        val show = !isOutputAtBottom()
+        if (jumpToBottomButton.isVisible != show) {
+            jumpToBottomButton.isVisible = show
+            jumpToBottomButton.parent?.revalidate()
+            jumpToBottomButton.parent?.repaint()
         }
     }
 

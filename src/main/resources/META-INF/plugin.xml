@@ -53,6 +53,7 @@
     <change-notes><![CDATA[
     <h3>1.0.2</h3>
     <ul>
+        <li><b>Smart auto-scroll</b> — chat output only follows new messages when you're already at the bottom; if you've scrolled up to read, your position is preserved. A floating "↓ Jump to latest" button appears in the bottom-right when you're scrolled away.</li>
         <li><b>File chips in chat input</b> — drag/drop, copy/paste, or paste a path and it becomes a compact <code>📎 filename</code> chip that expands to the absolute path on submit. Click the ✕ to remove.</li>
         <li><b>Smart filename resolution</b> — pasting just a filename (with or without extension) resolves to the project file via FilenameIndex; on macOS, Finder copies are read from <code>NSPasteboard</code> via AppleScript when JBR's clipboard bridge only exposes the bare filename.</li>
         <li><b>Large-text paste chips</b> — pasting >250 chars or >3 lines creates a "Pasted #N · X lines" chip instead of cluttering the input. Submitted text uses the full content.</li>
