@@ -1,5 +1,6 @@
 package com.claudecode.actions
 
+import com.claudecode.toolwindow.openClaudeSessionInDirectory
 import com.claudecode.toolwindow.sendContextToClaudeToolWindow
 import com.claudecode.toolwindow.sendToClaudeToolWindow
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -196,5 +197,20 @@ $fileList"""
             "scala", "go", "rs", "swift", "c", "cpp", "cc", "h", "hpp",
             "cs", "rb", "php", "groovy", "dart", "lua"
         )
+    }
+}
+
+class OpenSessionInDirectoryAction : AnAction() {
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    override fun update(e: AnActionEvent) {
+        val file = e.getData(CommonDataKeys.VIRTUAL_FILE)
+        e.presentation.isEnabledAndVisible = file != null && file.isDirectory
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project ?: return
+        val folder = e.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
+        openClaudeSessionInDirectory(project, folder.path, folder.name)
     }
 }

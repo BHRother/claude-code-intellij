@@ -51,6 +51,19 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.0.2</h3>
+    <ul>
+        <li><b>File chips in chat input</b> — drag/drop, copy/paste, or paste a path and it becomes a compact <code>📎 filename</code> chip that expands to the absolute path on submit. Click the ✕ to remove.</li>
+        <li><b>Smart filename resolution</b> — pasting just a filename (with or without extension) resolves to the project file via FilenameIndex; on macOS, Finder copies are read from <code>NSPasteboard</code> via AppleScript when JBR's clipboard bridge only exposes the bare filename.</li>
+        <li><b>Large-text paste chips</b> — pasting >250 chars or >3 lines creates a "Pasted #N · X lines" chip instead of cluttering the input. Submitted text uses the full content.</li>
+        <li><b>Open Claude Session Here</b> — right-click any folder in the project tree to open a new Claude Code session rooted at that folder.</li>
+        <li><b>Editable model selector</b> — type any model ID in Settings, not just the bundled list; recognized models from sessions are remembered. Adds Opus 4.7 to the bundled list.</li>
+        <li><b>Better diff summary</b> — Edit results now show <code>~modified, +added, -removed</code> with proper LCS-based counts instead of overcounting.</li>
+        <li><b>Tool-aware thinking indicator</b> — shows the running tool name and elapsed seconds while Claude is working.</li>
+        <li><b>Tool window focus</b> — Send-to-Claude actions now activate the Claude tool window (focusing the input) rather than just showing it.</li>
+        <li><b>Debug log off by default</b> — checkbox starts unchecked so it doesn't take up space.</li>
+    </ul>
+
     <h3>1.0.1</h3>
     <ul>
         <li><b>Explain Folder</b> — right-click any folder in the project tree to get a hierarchical summary of its contents, with breakdowns for each sub-folder up to 2 levels deep</li>
@@ -201,6 +214,12 @@
                     class="com.claudecode.actions.SendFileToClaudeAction"
                     text="Send to Claude"
                     description="Send this file as context to Claude"
+                    icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.OpenSessionInDirectory"
+                    class="com.claudecode.actions.OpenSessionInDirectoryAction"
+                    text="Open Claude Session Here"
+                    description="Open a new Claude Code session with this folder as working directory"
                     icon="/icons/claude.svg"/>
         </group>
 

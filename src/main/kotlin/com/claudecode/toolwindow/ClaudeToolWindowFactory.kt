@@ -215,7 +215,7 @@ fun sendToClaudeToolWindow(project: Project, message: String) {
     val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
     val toolWindow = toolWindowManager.getToolWindow(com.claudecode.ClaudeConstants.TOOL_WINDOW_ID) ?: return
 
-    toolWindow.show {
+    toolWindow.activate {
         val content = toolWindow.contentManager.selectedContent
         val panel = content?.component as? SessionPanel
 
@@ -234,11 +234,30 @@ fun sendToClaudeToolWindow(project: Project, message: String) {
     }
 }
 
+fun openClaudeSessionInDirectory(project: Project, dirPath: String, dirName: String) {
+    val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+    val toolWindow = toolWindowManager.getToolWindow(com.claudecode.ClaudeConstants.TOOL_WINDOW_ID) ?: return
+
+    toolWindow.activate {
+        val session = SessionManager.getInstance(project).createSession(
+            name = dirName,
+            workDir = dirPath
+        )
+        if (session == null) {
+            Messages.showWarningDialog(
+                project,
+                "Maximum number of sessions reached. Close an existing session first.",
+                com.claudecode.ClaudeConstants.TOOL_WINDOW_ID
+            )
+        }
+    }
+}
+
 fun sendContextToClaudeToolWindow(project: Project, context: String) {
     val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
     val toolWindow = toolWindowManager.getToolWindow(com.claudecode.ClaudeConstants.TOOL_WINDOW_ID) ?: return
 
-    toolWindow.show {
+    toolWindow.activate {
         val content = toolWindow.contentManager.selectedContent
         val panel = content?.component as? SessionPanel
 

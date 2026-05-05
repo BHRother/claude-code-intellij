@@ -26,7 +26,7 @@ class SessionPanel(
 ) : JPanel(BorderLayout()), SessionListener {
 
     private lateinit var outputPane: JTextPane
-    private lateinit var inputArea: JTextArea
+    private lateinit var inputArea: PasteAwareInputArea
     private val sendStopButton: JButton
     private val statusLabel: JLabel
     private val modelLabel: JLabel
@@ -35,6 +35,9 @@ class SessionPanel(
     private val debugToggle: JCheckBox
     private var thinkingTimer: Timer? = null
     private var dotCount = 0
+    private var thinkingStartTime = 0L
+    private var thinkingContent: String? = null
+    private var activeToolName: String? = null
     private var hasAutoNamed = false
     private var lastCtrlCTime = 0L
     private var ctrlCDispatcher: java.awt.KeyEventDispatcher? = null
@@ -53,6 +56,7 @@ class SessionPanel(
     private var lastEditCount: Int = 0
     private var lastEditAddedLines: Int = 0
     private var lastEditRemovedLines: Int = 0
+    private var lastEditChangedLines: Int = 0
     private var lastEditDiffPairs: MutableList<Pair<String, String>> = mutableListOf()
     private var lastEditDisplayText: String? = null
 
@@ -174,25 +178,17 @@ class SessionPanel(
         }
 
         thinkingLabel = JLabel("").apply {
-            font = monoFont.deriveFont(Font.ITALIC)
+            font = monoFont.deriveFont(Font.ITALIC, 11f)
             foreground = JBColor(Color(0xD9, 0x77, 0x57), Color(0xD9, 0x77, 0x57))
             border = JBUI.Borders.empty(4, 8)
             isVisible = false
         }
 
-        inputArea = JTextArea(3, 40).apply {
-            font = monoFont
-            lineWrap = true
-            wrapStyleWord = true
-            border = JBUI.Borders.empty(8)
-            background = JBColor(Color(0x2B, 0x2D, 0x30), Color(0x2B, 0x2D, 0x30))
-            foreground = JBColor(Color(0xBC, 0xBE, 0xC4), Color(0xBC, 0xBE, 0xC4))
-            caretColor = JBColor(Color(0xBC, 0xBE, 0xC4), Color(0xBC, 0xBE, 0xC4))
-        }
+        inputArea = PasteAwareInputArea(monoFont, project)
 
         // Key bindings via InputMap/ActionMap (works reliably on macOS)
-        val inputMap = inputArea.getInputMap(JComponent.WHEN_FOCUSED)
-        val actionMap = inputArea.actionMap
+        val inputMap = inputArea.getTextInputMap(JComponent.WHEN_FOCUSED)
+        val actionMap = inputArea.getTextActionMap()
 
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "send-message")
         actionMap.put("send-message", object : AbstractAction() {
@@ -249,12 +245,9 @@ class SessionPanel(
         }
         KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(ctrlCDispatcher)
 
-        val inputScrollPane = JBScrollPane(inputArea).apply {
-            border = JBUI.Borders.customLine(JBColor(0x3C3F41, 0x3C3F41), 1, 0, 0, 0)
-            verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
-            minimumSize = Dimension(0, 60)
-            preferredSize = Dimension(0, 80)
-        }
+        inputArea.border = JBUI.Borders.customLine(JBColor(0x3C3F41, 0x3C3F41), 1, 0, 0, 0)
+        inputArea.minimumSize = Dimension(0, 60)
+        inputArea.preferredSize = Dimension(0, 100)
 
         sendStopButton = JButton("Send").apply {
             addActionListener { onSendStopClick() }
@@ -268,7 +261,7 @@ class SessionPanel(
         }
 
         val ctrlKey = if (System.getProperty("os.name").lowercase().contains("mac")) "Cmd" else "Ctrl"
-        val hintLabel = JLabel("Enter to send, Shift+Enter for newline, ${ctrlKey}+C×2 to stop").apply {
+        val hintLabel = JLabel("Enter to send, Shift+Enter for newline, ${ctrlKey}+C×2 to stop, @file to reference").apply {
             foreground = JBColor(0x606060, 0x606060)
             font = monoFont.deriveFont(10f)
             border = JBUI.Borders.empty(2, 8)
@@ -287,14 +280,14 @@ class SessionPanel(
         val debugScrollPane = JBScrollPane(debugArea).apply {
             border = JBUI.Borders.customLine(JBColor(0x3C3F41, 0x3C3F41), 1, 0, 0, 0)
             preferredSize = Dimension(0, 120)
-            isVisible = true
+            isVisible = false
         }
 
         debugToggle = JCheckBox("Show debug log").apply {
             font = monoFont.deriveFont(10f)
             foreground = JBColor(0x606060, 0x606060)
             isOpaque = false
-            isSelected = true
+            isSelected = false
             addActionListener {
                 debugScrollPane.isVisible = isSelected
                 this@SessionPanel.revalidate()
@@ -308,7 +301,7 @@ class SessionPanel(
 
         val inputPanel = JPanel(BorderLayout(4, 0)).apply {
             border = JBUI.Borders.empty(4)
-            add(inputScrollPane, BorderLayout.CENTER)
+            add(inputArea, BorderLayout.CENTER)
             add(buttonPanel, BorderLayout.EAST)
         }
 
@@ -352,10 +345,10 @@ class SessionPanel(
     }
 
     private fun sendCurrentMessage() {
-        val text = inputArea.text.trim()
+        val text = inputArea.getFullText()
         if (text.isEmpty() || session.isBusy) return
 
-        inputArea.text = ""
+        inputArea.clear()
         autoNameTab(text)
         appendUserMessage(text)
         setBusyState(true)
@@ -371,6 +364,7 @@ class SessionPanel(
     }
 
     fun prefillInput(text: String) {
+        inputArea.clear()
         inputArea.text = text
         inputArea.caretPosition = 0
         inputArea.requestFocusInWindow()
@@ -403,12 +397,16 @@ class SessionPanel(
             sendStopButton.text = "Stop"
             sendStopButton.toolTipText = "Stop Claude (cancel current request)"
             statusLabel.text = "Claude is thinking..."
+            statusLabel.foreground = JBColor(Color(0xD9, 0x77, 0x57), Color(0xD9, 0x77, 0x57))
+            thinkingContent = null
+            activeToolName = null
             startThinkingAnimation()
         } else {
             stopThinkingAnimation()
             sendStopButton.text = "Send"
             sendStopButton.toolTipText = "Send message (Enter). Shift+Enter for new line."
             statusLabel.text = "Ready"
+            statusLabel.foreground = JBColor(Color(0x80, 0x80, 0x80), Color(0x80, 0x80, 0x80))
         }
     }
 
@@ -428,16 +426,23 @@ class SessionPanel(
 
     override fun onThinking(session: ClaudeSession, thinking: String?) {
         ApplicationManager.getApplication().invokeLater {
-            startThinkingAnimation()
+            activeToolName = null
             if (thinking != null) {
-                thinkingLabel.text = "  Thinking: ${thinking.take(80)}..."
+                thinkingContent = thinking.take(60)
             }
+            startThinkingAnimation()
             statusLabel.text = "Claude is thinking..."
         }
     }
 
     override fun onToolUse(session: ClaudeSession, tool: String, detail: String?, diffSummary: String?, diffData: Pair<String, String>?, filePath: String?) {
         ApplicationManager.getApplication().invokeLater {
+            thinkingContent = null
+            activeToolName = detail?.take(50) ?: tool
+            thinkingStartTime = System.currentTimeMillis()
+            if (thinkingTimer == null) startThinkingAnimation()
+            statusLabel.text = "Running: ${activeToolName}"
+
             val isEdit = tool == "Edit" && filePath != null
             val displayText = detail ?: tool
 
@@ -446,9 +451,11 @@ class SessionPanel(
                 lastEditCount++
                 lastEditDisplayText = displayText
                 if (diffData != null) {
-                    lastEditAddedLines += diffData.second.lines().size
-                    lastEditRemovedLines += diffData.first.lines().size
                     lastEditDiffPairs.add(diffData)
+                    val stats = computeDiffStats(lastEditDiffPairs)
+                    lastEditAddedLines = stats.added
+                    lastEditRemovedLines = stats.removed
+                    lastEditChangedLines = stats.changed
                 }
 
                 val consolidatedDiffId = "diff-c-${lastEditElementId}"
@@ -462,6 +469,7 @@ class SessionPanel(
                     consolidatedDiffId,
                     lastEditAddedLines,
                     lastEditRemovedLines,
+                    lastEditChangedLines,
                     lastEditCount
                 )
 
@@ -509,12 +517,15 @@ class SessionPanel(
                 lastEditDisplayText = displayText
                 lastEditAddedLines = 0
                 lastEditRemovedLines = 0
+                lastEditChangedLines = 0
                 lastEditDiffPairs.clear()
 
                 if (diffData != null) {
-                    lastEditAddedLines = diffData.second.lines().size
-                    lastEditRemovedLines = diffData.first.lines().size
                     lastEditDiffPairs.add(diffData)
+                    val stats = computeDiffStats(lastEditDiffPairs)
+                    lastEditAddedLines = stats.added
+                    lastEditRemovedLines = stats.removed
+                    lastEditChangedLines = stats.changed
                 }
 
                 val consolidatedDiffId = "diff-c-$elementId"
@@ -525,7 +536,15 @@ class SessionPanel(
                     " <a href=\"http://localhost/action/inline-diff/$consolidatedDiffId\" style='color: #808080;'>[\u25BC diff]</a>"
                 } else ""
 
-                appendHtml("<div id='$elementId' class='tool-msg'><span style='color: $color;'>\u23FA</span> ${escapeHtml(displayText)}$diffToggleHtml$diffHtml</div>")
+                val editSummaryHtml = if (diffData != null) {
+                    val parts = mutableListOf<String>()
+                    if (lastEditChangedLines > 0) parts.add("~$lastEditChangedLines modified")
+                    if (lastEditAddedLines > 0) parts.add("+$lastEditAddedLines added")
+                    if (lastEditRemovedLines > 0) parts.add("-$lastEditRemovedLines removed")
+                    "<br/>&nbsp;&nbsp;<span style='color: #808080;'>\u23BF ${parts.joinToString(", ")}</span>"
+                } else diffHtml
+
+                appendHtml("<div id='$elementId' class='tool-msg'><span style='color: $color;'>\u23FA</span> ${escapeHtml(displayText)}$diffToggleHtml$editSummaryHtml</div>")
                 if (diffData != null) {
                     appendHtml("<div id='container-$consolidatedDiffId'>${pendingDiffs[consolidatedDiffId]}</div>")
                 }
@@ -557,6 +576,7 @@ class SessionPanel(
         diffId: String,
         addedLines: Int,
         removedLines: Int,
+        changedLines: Int,
         editCount: Int
     ): String {
         val color = "#D9B263"
@@ -564,8 +584,9 @@ class SessionPanel(
         val diffToggleHtml = " <a href=\"http://localhost/action/inline-diff/$diffId\" style='color: #808080;'>[$arrow diff]</a>"
 
         val summaryParts = mutableListOf<String>()
-        if (addedLines > 0) summaryParts.add("Added $addedLines line${if (addedLines > 1) "s" else ""}")
-        if (removedLines > 0) summaryParts.add("removed $removedLines line${if (removedLines > 1) "s" else ""}")
+        if (changedLines > 0) summaryParts.add("~$changedLines modified")
+        if (addedLines > 0) summaryParts.add("+$addedLines added")
+        if (removedLines > 0) summaryParts.add("-$removedLines removed")
         val editsLabel = if (editCount > 1) " ($editCount edits)" else ""
         val summary = summaryParts.joinToString(", ") + editsLabel
 
@@ -580,8 +601,29 @@ class SessionPanel(
         lastEditCount = 0
         lastEditAddedLines = 0
         lastEditRemovedLines = 0
+        lastEditChangedLines = 0
         lastEditDiffPairs.clear()
         lastEditDisplayText = null
+    }
+
+    private data class DiffStats(val added: Int, val removed: Int, val changed: Int)
+
+    private fun computeDiffStats(diffPairs: List<Pair<String, String>>): DiffStats {
+        var added = 0
+        var removed = 0
+        var changed = 0
+        for (pair in diffPairs) {
+            val ops = computeDiff(pair.first.lines(), pair.second.lines())
+            for (op in ops) {
+                when (op.type) {
+                    DiffOp.Type.ADDED -> added++
+                    DiffOp.Type.REMOVED -> removed++
+                    DiffOp.Type.MODIFIED_OLD -> changed++
+                    else -> {}
+                }
+            }
+        }
+        return DiffStats(added, removed, changed)
     }
 
     override fun onFileChanged(session: ClaudeSession, filePath: String, action: String) {
@@ -640,11 +682,11 @@ class SessionPanel(
 
             permissionPanel = bar
             // Insert above the input area
-            val bottomPanel = inputArea.parent?.parent?.parent ?: return@invokeLater
-            if (bottomPanel is JPanel) {
-                bottomPanel.add(bar, 0)
-                bottomPanel.revalidate()
-                bottomPanel.repaint()
+            val bottomContainer = inputArea.parent?.parent ?: return@invokeLater
+            if (bottomContainer is JPanel) {
+                bottomContainer.add(bar, 0)
+                bottomContainer.revalidate()
+                bottomContainer.repaint()
             }
         }
 
@@ -678,11 +720,19 @@ class SessionPanel(
                 .let { if (it.contains("(")) "$it)" else it }
             modelLabel.text = "Model: $displayName"
             modelLabel.toolTipText = model
+
+            if (model.isNotBlank()) {
+                ClaudeSettings.getInstance().addCustomModel(model)
+            }
         }
     }
 
     override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean) {
         ApplicationManager.getApplication().invokeLater {
+            activeToolName = null
+            thinkingContent = null
+            thinkingStartTime = System.currentTimeMillis()
+            statusLabel.text = "Claude is thinking..."
             val color = if (isError) "#FF6B68" else "#6A8759"
             val label = if (isError) "\u2717 failed" else "\u2713"
             appendHtml("<div class='tool-msg'>&nbsp;&nbsp;<span style='color: $color;'>$label</span></div>")
@@ -722,11 +772,19 @@ class SessionPanel(
     private fun startThinkingAnimation() {
         if (thinkingTimer != null) return
         dotCount = 0
+        thinkingStartTime = System.currentTimeMillis()
         thinkingLabel.isVisible = true
-        thinkingTimer = Timer(400) {
+        thinkingTimer = Timer(500) {
             dotCount = (dotCount + 1) % 4
-            val dots = ".".repeat(dotCount)
-            thinkingLabel.text = "  Claude is thinking$dots"
+            val elapsed = (System.currentTimeMillis() - thinkingStartTime) / 1000
+            val dots = ".".repeat(dotCount + 1)
+            val timeStr = if (elapsed >= 2) " (${elapsed}s)" else ""
+            val prefix = when {
+                activeToolName != null -> "Running ${activeToolName}${dots}"
+                thinkingContent != null -> "Thinking: ${thinkingContent}${dots}"
+                else -> "Claude is thinking${dots}"
+            }
+            thinkingLabel.text = "  $prefix$timeStr"
         }
         thinkingTimer?.start()
     }
@@ -735,6 +793,8 @@ class SessionPanel(
         thinkingTimer?.stop()
         thinkingTimer = null
         thinkingLabel.isVisible = false
+        thinkingContent = null
+        activeToolName = null
     }
 
     private fun appendHtml(html: String) {
@@ -818,66 +878,143 @@ class SessionPanel(
     }
 
     private fun buildInlineDiffHtml(oldStr: String, newStr: String, lang: String = "", filePath: String? = null): String {
-        val keywords = MarkdownRenderer.keywordsForLanguage(lang)
-        val addedCount = newStr.lines().size
-        val removedCount = oldStr.lines().size
-        val sb = StringBuilder()
-        sb.append("<div style='background-color: #2B2D30; padding: 0; margin: 2px 0 4px 16px; font-size: 11px;'>")
-        // File header
-        val fileLabel = if (filePath != null) shortenPath(filePath) else ""
-        val langLabel = if (lang.isNotEmpty()) "<span style='color: #808080;'>${lang.uppercase().take(4)}</span> " else ""
-        sb.append("<div style='padding: 4px 8px; color: #808080; border-bottom: 1px solid #3C3F41;'>")
-        sb.append("$langLabel<span style='color: #BCBEC4;'>$fileLabel</span> ")
-        sb.append("<span style='color: #6A8759;'>+$addedCount</span> <span style='color: #FF6B68;'>-$removedCount</span>")
-        sb.append("</div>")
-        // Diff lines
-        sb.append("<div style='padding: 4px 0;'>")
-        for (line in oldStr.lines()) {
-            val escaped = escapeHtml(line).replace("<br/>", "")
-            val highlighted = if (keywords.isNotEmpty()) MarkdownRenderer.highlightLine(escaped, keywords) else escaped
-            sb.append("<div style='white-space: pre; background-color: #3D2020; padding: 1px 8px;'><span style='color: #FF6B68;'>- </span>$highlighted</div>")
-        }
-        for (line in newStr.lines()) {
-            val escaped = escapeHtml(line).replace("<br/>", "")
-            val highlighted = if (keywords.isNotEmpty()) MarkdownRenderer.highlightLine(escaped, keywords) else escaped
-            sb.append("<div style='white-space: pre; background-color: #1E3520; padding: 1px 8px;'><span style='color: #6A8759;'>+ </span>$highlighted</div>")
-        }
-        sb.append("</div></div>")
-        return sb.toString()
+        return buildConsolidatedDiffHtml(listOf(Pair(oldStr, newStr)), lang, filePath)
+    }
+
+    private fun preserveLeadingWhitespace(html: String): String {
+        val leadingSpaces = html.length - html.trimStart().length
+        if (leadingSpaces == 0) return html
+        return "&nbsp;".repeat(leadingSpaces) + html.trimStart()
     }
 
     private fun buildConsolidatedDiffHtml(diffPairs: List<Pair<String, String>>, lang: String = "", filePath: String? = null): String {
         val keywords = MarkdownRenderer.keywordsForLanguage(lang)
-        val totalAdded = diffPairs.sumOf { it.second.lines().size }
-        val totalRemoved = diffPairs.sumOf { it.first.lines().size }
         val sb = StringBuilder()
         sb.append("<div style='background-color: #2B2D30; padding: 0; margin: 2px 0 4px 16px; font-size: 11px;'>")
-        // File header
+
+        var totalAdded = 0
+        var totalRemoved = 0
+        var totalChanged = 0
+
+        val allHunks = StringBuilder()
+        for ((index, pair) in diffPairs.withIndex()) {
+            if (index > 0) {
+                allHunks.append("<div style='border-top: 1px solid #3C3F41; margin: 0;'></div>")
+            }
+            val oldLines = pair.first.lines()
+            val newLines = pair.second.lines()
+            val ops = computeDiff(oldLines, newLines)
+
+            allHunks.append("<div style='padding: 0;'>")
+            for (op in ops) {
+                val escaped = escapeHtml(op.line).replace("<br/>", "")
+                val highlighted = preserveLeadingWhitespace(
+                    if (keywords.isNotEmpty()) MarkdownRenderer.highlightLine(escaped, keywords) else escaped
+                )
+                when (op.type) {
+                    DiffOp.Type.CONTEXT -> {
+                        allHunks.append("<div style='white-space: pre; padding: 1px 8px;'><span style='color: #808080;'>  </span>$highlighted</div>")
+                    }
+                    DiffOp.Type.ADDED -> {
+                        totalAdded++
+                        allHunks.append("<div style='white-space: pre; background-color: #1E3520; padding: 1px 8px;'><span style='color: #6A8759;'>+ </span>$highlighted</div>")
+                    }
+                    DiffOp.Type.REMOVED -> {
+                        totalRemoved++
+                        allHunks.append("<div style='white-space: pre; background-color: #3D2020; padding: 1px 8px;'><span style='color: #FF6B68;'>- </span>$highlighted</div>")
+                    }
+                    DiffOp.Type.MODIFIED_OLD -> {
+                        totalChanged++
+                        allHunks.append("<div style='white-space: pre; background-color: #3D2020; padding: 1px 8px;'><span style='color: #FF6B68;'>~ </span>$highlighted</div>")
+                    }
+                    DiffOp.Type.MODIFIED_NEW -> {
+                        allHunks.append("<div style='white-space: pre; background-color: #1E3520; padding: 1px 8px;'><span style='color: #6A8759;'>~ </span>$highlighted</div>")
+                    }
+                }
+            }
+            allHunks.append("</div>")
+        }
+
+        // File header with accurate counts
         val fileLabel = if (filePath != null) shortenPath(filePath) else ""
         val langLabel = if (lang.isNotEmpty()) "<span style='color: #808080;'>${lang.uppercase().take(4)}</span> " else ""
         sb.append("<div style='padding: 4px 8px; color: #808080; border-bottom: 1px solid #3C3F41;'>")
         sb.append("$langLabel<span style='color: #BCBEC4;'>$fileLabel</span> ")
-        sb.append("<span style='color: #6A8759;'>+$totalAdded</span> <span style='color: #FF6B68;'>-$totalRemoved</span>")
+        val parts = mutableListOf<String>()
+        if (totalAdded > 0) parts.add("<span style='color: #6A8759;'>+$totalAdded</span>")
+        if (totalRemoved > 0) parts.add("<span style='color: #FF6B68;'>-$totalRemoved</span>")
+        if (totalChanged > 0) parts.add("<span style='color: #D9B263;'>~$totalChanged</span>")
+        sb.append(parts.joinToString(" "))
         sb.append("</div>")
-        for ((index, pair) in diffPairs.withIndex()) {
-            if (index > 0) {
-                sb.append("<div style='border-top: 1px solid #3C3F41; margin: 0;'></div>")
-            }
-            sb.append("<div style='padding: 0;'>")
-            for (line in pair.first.lines()) {
-                val escaped = escapeHtml(line).replace("<br/>", "")
-                val highlighted = if (keywords.isNotEmpty()) MarkdownRenderer.highlightLine(escaped, keywords) else escaped
-                sb.append("<div style='white-space: pre; background-color: #3D2020; padding: 1px 8px;'><span style='color: #FF6B68;'>- </span>$highlighted</div>")
-            }
-            for (line in pair.second.lines()) {
-                val escaped = escapeHtml(line).replace("<br/>", "")
-                val highlighted = if (keywords.isNotEmpty()) MarkdownRenderer.highlightLine(escaped, keywords) else escaped
-                sb.append("<div style='white-space: pre; background-color: #1E3520; padding: 1px 8px;'><span style='color: #6A8759;'>+ </span>$highlighted</div>")
-            }
-            sb.append("</div>")
-        }
+        sb.append(allHunks)
         sb.append("</div>")
         return sb.toString()
+    }
+
+    private data class DiffOp(val type: Type, val line: String) {
+        enum class Type { CONTEXT, ADDED, REMOVED, MODIFIED_OLD, MODIFIED_NEW }
+    }
+
+    private fun computeDiff(oldLines: List<String>, newLines: List<String>): List<DiffOp> {
+        val n = oldLines.size
+        val m = newLines.size
+
+        // Compute LCS table
+        val dp = Array(n + 1) { IntArray(m + 1) }
+        for (i in 1..n) {
+            for (j in 1..m) {
+                dp[i][j] = if (oldLines[i - 1] == newLines[j - 1]) {
+                    dp[i - 1][j - 1] + 1
+                } else {
+                    maxOf(dp[i - 1][j], dp[i][j - 1])
+                }
+            }
+        }
+
+        // Backtrack to build diff operations
+        val ops = mutableListOf<DiffOp>()
+        var i = n
+        var j = m
+        val pendingRemoved = mutableListOf<String>()
+        val pendingAdded = mutableListOf<String>()
+
+        fun flushPending() {
+            if (pendingRemoved.isEmpty() && pendingAdded.isEmpty()) return
+
+            // Pair up removed/added lines that are similar as "modified"
+            val pairs = minOf(pendingRemoved.size, pendingAdded.size)
+            for (k in 0 until pairs) {
+                ops.add(DiffOp(DiffOp.Type.MODIFIED_OLD, pendingRemoved[k]))
+                ops.add(DiffOp(DiffOp.Type.MODIFIED_NEW, pendingAdded[k]))
+            }
+            // Remaining unpaired lines
+            for (k in pairs until pendingRemoved.size) {
+                ops.add(DiffOp(DiffOp.Type.REMOVED, pendingRemoved[k]))
+            }
+            for (k in pairs until pendingAdded.size) {
+                ops.add(DiffOp(DiffOp.Type.ADDED, pendingAdded[k]))
+            }
+            pendingRemoved.clear()
+            pendingAdded.clear()
+        }
+
+        while (i > 0 || j > 0) {
+            if (i > 0 && j > 0 && oldLines[i - 1] == newLines[j - 1]) {
+                flushPending()
+                ops.add(DiffOp(DiffOp.Type.CONTEXT, oldLines[i - 1]))
+                i--
+                j--
+            } else if (j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+                pendingAdded.add(0, newLines[j - 1])
+                j--
+            } else {
+                pendingRemoved.add(0, oldLines[i - 1])
+                i--
+            }
+        }
+        flushPending()
+
+        return ops.reversed()
     }
 
     private fun toggleInlineDiff(diffId: String) {

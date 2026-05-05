@@ -56,6 +56,12 @@ class ClaudeSettingsStateTest {
             val state = ClaudeSettings.State()
             assertTrue(state.autoAcceptPermissions)
         }
+
+        @Test
+        fun `customModels is empty by default`() {
+            val state = ClaudeSettings.State()
+            assertEquals("", state.customModels)
+        }
     }
 
     @Nested
@@ -100,6 +106,13 @@ class ClaudeSettingsStateTest {
             val state = ClaudeSettings.State()
             state.autoAcceptPermissions = false
             assertFalse(state.autoAcceptPermissions)
+        }
+
+        @Test
+        fun `customModels is mutable`() {
+            val state = ClaudeSettings.State()
+            state.customModels = "claude-test-1,claude-test-2"
+            assertEquals("claude-test-1,claude-test-2", state.customModels)
         }
     }
 
@@ -156,7 +169,8 @@ class ClaudeSettingsStateTest {
                 maxSessions = 5,
                 fontSize = 16,
                 sendSelectionContext = false,
-                autoAcceptPermissions = false
+                autoAcceptPermissions = false,
+                customModels = "claude-test-1"
             )
             val copy = original.copy()
             assertEquals(original, copy)
@@ -229,7 +243,8 @@ class ClaudeSettingsStateTest {
                 maxSessions = 3,
                 fontSize = 16,
                 sendSelectionContext = false,
-                autoAcceptPermissions = false
+                autoAcceptPermissions = false,
+                customModels = "claude-custom-1,claude-custom-2"
             )
             assertEquals("/opt/claude", state.claudePath)
             assertEquals(ClaudeConstants.MODEL_SONNET, state.model)
@@ -239,6 +254,7 @@ class ClaudeSettingsStateTest {
             assertEquals(16, state.fontSize)
             assertFalse(state.sendSelectionContext)
             assertFalse(state.autoAcceptPermissions)
+            assertEquals("claude-custom-1,claude-custom-2", state.customModels)
         }
     }
 }

@@ -22,13 +22,22 @@ class ClaudeSettingsConfigurable : Configurable {
                         .comment("Path to the 'claude' CLI executable")
                 }
                 row("Model:") {
-                    val models = com.claudecode.ClaudeConstants.AVAILABLE_MODELS
-                    comboBox(models)
+                    val allModels = settings.getAllModels()
+                    comboBox(allModels)
                         .bindItem(
                             { settings.state.model },
                             { settings.state.model = it ?: "" }
                         )
-                        .comment("Leave empty to use the default model configured in Claude CLI")
+                        .applyToComponent { isEditable = true }
+                        .validationOnApply {
+                            val text = (it.editor.item as? String)?.trim() ?: ""
+                            if (text.isNotBlank() && !text.startsWith("claude-")) {
+                                warning("Model ID typically starts with 'claude-' (e.g., claude-sonnet-4-6). Save anyway?")
+                            } else {
+                                null
+                            }
+                        }
+                        .comment("Leave empty for CLI default. You can type any model ID.")
                 }
                 row("Font size:") {
                     spinner(8..32)

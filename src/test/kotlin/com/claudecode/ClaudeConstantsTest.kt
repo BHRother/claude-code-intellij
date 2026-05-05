@@ -17,6 +17,11 @@ class ClaudeConstantsTest {
     @Nested
     inner class ModelConstants {
         @Test
+        fun `opus 4-7 model id`() {
+            assertEquals("claude-opus-4-7", ClaudeConstants.MODEL_OPUS_47)
+        }
+
+        @Test
         fun `opus model id`() {
             assertEquals("claude-opus-4-6", ClaudeConstants.MODEL_OPUS)
         }
@@ -77,6 +82,7 @@ class ClaudeConstantsTest {
 
         @Test
         fun `available models contains all model constants`() {
+            assertTrue(ClaudeConstants.AVAILABLE_MODELS.contains(ClaudeConstants.MODEL_OPUS_47))
             assertTrue(ClaudeConstants.AVAILABLE_MODELS.contains(ClaudeConstants.MODEL_OPUS))
             assertTrue(ClaudeConstants.AVAILABLE_MODELS.contains(ClaudeConstants.MODEL_SONNET))
             assertTrue(ClaudeConstants.AVAILABLE_MODELS.contains(ClaudeConstants.MODEL_HAIKU))
@@ -84,14 +90,14 @@ class ClaudeConstantsTest {
         }
 
         @Test
-        fun `available models has 5 entries`() {
-            assertEquals(5, ClaudeConstants.AVAILABLE_MODELS.size)
+        fun `available models has 6 entries`() {
+            assertEquals(6, ClaudeConstants.AVAILABLE_MODELS.size)
         }
 
         @Test
         fun `available models is a list with correct order`() {
             assertEquals(
-                listOf("", ClaudeConstants.MODEL_OPUS, ClaudeConstants.MODEL_SONNET, ClaudeConstants.MODEL_HAIKU, ClaudeConstants.MODEL_SONNET_PREV),
+                listOf("", ClaudeConstants.MODEL_OPUS_47, ClaudeConstants.MODEL_OPUS, ClaudeConstants.MODEL_SONNET, ClaudeConstants.MODEL_HAIKU, ClaudeConstants.MODEL_SONNET_PREV),
                 ClaudeConstants.AVAILABLE_MODELS
             )
         }

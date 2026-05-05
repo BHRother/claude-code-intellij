@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.claudecode"
-version = "1.0.1"
+version = "1.0.2"
 
 repositories {
     mavenCentral()
@@ -34,6 +34,14 @@ kotlin {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+}
+
+tasks.named("instrumentCode") {
+    enabled = false
+}
+
+tasks.named("instrumentTestCode") {
+    enabled = false
 }
 
 tasks {

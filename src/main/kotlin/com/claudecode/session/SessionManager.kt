@@ -27,13 +27,13 @@ class SessionManager(private val project: Project) : Disposable {
 
     fun getSessions(): List<ClaudeSession> = sessions.toList()
 
-    fun createSession(name: String? = null): ClaudeSession? {
+    fun createSession(name: String? = null, workDir: String? = null): ClaudeSession? {
         val maxSessions = ClaudeSettings.getInstance().state.maxSessions
         if (sessions.size >= maxSessions) return null
 
         val sessionName = name ?: "Session ${sessions.size + 1}"
-        val workDir = project.basePath ?: System.getProperty("user.home")
-        val session = ClaudeSession(workDir, sessionName)
+        val workingDir = workDir ?: project.basePath ?: System.getProperty("user.home")
+        val session = ClaudeSession(workingDir, sessionName)
         sessions.add(session)
         listeners.forEach { it.onSessionAdded(session) }
         return session

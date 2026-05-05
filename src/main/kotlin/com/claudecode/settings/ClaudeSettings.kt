@@ -19,7 +19,8 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         var maxSessions: Int = 10,
         var fontSize: Int = 13,
         var sendSelectionContext: Boolean = true,
-        var autoAcceptPermissions: Boolean = true
+        var autoAcceptPermissions: Boolean = true,
+        var customModels: String = ""
     )
 
     private var myState = State()
@@ -29,6 +30,22 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
     override fun loadState(state: State) {
         myState = state
     }
+
+    fun getCustomModelsList(): List<String> =
+        myState.customModels.split(",").filter { it.isNotBlank() }
+
+    fun addCustomModel(model: String) {
+        if (model.isBlank()) return
+        if (model in com.claudecode.ClaudeConstants.AVAILABLE_MODELS) return
+        val existing = getCustomModelsList().toMutableList()
+        if (model !in existing) {
+            existing.add(model)
+            myState.customModels = existing.joinToString(",")
+        }
+    }
+
+    fun getAllModels(): List<String> =
+        (com.claudecode.ClaudeConstants.AVAILABLE_MODELS + getCustomModelsList()).distinct()
 
     companion object {
         fun getInstance(): ClaudeSettings =
