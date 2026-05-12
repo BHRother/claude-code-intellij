@@ -133,7 +133,6 @@ class WelcomePanel(
                     <li>Choose your preferred Claude model</li>
                     <li>Configure the CLI path</li>
                     <li>Toggle auto-accept file changes</li>
-                    <li>Enable experimental code completion</li>
                 </ul>
             </div>
 

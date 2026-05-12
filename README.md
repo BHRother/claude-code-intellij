@@ -43,7 +43,6 @@ Configurable via **Settings → Tools → Claude Code**:
 - Max concurrent sessions
 - Auto-accept file changes or require manual approval
 - Send selected code as context (toggle)
-- Experimental code completion (opt-in)
 
 ## Prerequisites
 

@@ -22,18 +22,6 @@ class ClaudeSettingsStateTest {
         }
 
         @Test
-        fun `completion is disabled by default`() {
-            val state = ClaudeSettings.State()
-            assertFalse(state.enableCompletion)
-        }
-
-        @Test
-        fun `default completion debounce is 500ms`() {
-            val state = ClaudeSettings.State()
-            assertEquals(500L, state.completionDebounceMs)
-        }
-
-        @Test
         fun `default max sessions is 10`() {
             val state = ClaudeSettings.State()
             assertEquals(10, state.maxSessions)
@@ -71,12 +59,10 @@ class ClaudeSettingsStateTest {
             val state = ClaudeSettings.State()
             state.claudePath = "/usr/local/bin/claude"
             state.model = "claude-opus-4-6"
-            state.enableCompletion = true
             state.maxSessions = 5
 
             assertEquals("/usr/local/bin/claude", state.claudePath)
             assertEquals("claude-opus-4-6", state.model)
-            assertTrue(state.enableCompletion)
             assertEquals(5, state.maxSessions)
         }
 
@@ -85,13 +71,6 @@ class ClaudeSettingsStateTest {
             val state = ClaudeSettings.State()
             state.fontSize = 18
             assertEquals(18, state.fontSize)
-        }
-
-        @Test
-        fun `completionDebounceMs is mutable`() {
-            val state = ClaudeSettings.State()
-            state.completionDebounceMs = 1000L
-            assertEquals(1000L, state.completionDebounceMs)
         }
 
         @Test
@@ -164,8 +143,6 @@ class ClaudeSettingsStateTest {
             val original = ClaudeSettings.State(
                 claudePath = "/custom",
                 model = "opus",
-                enableCompletion = true,
-                completionDebounceMs = 1000L,
                 maxSessions = 5,
                 fontSize = 16,
                 sendSelectionContext = false,
@@ -180,13 +157,6 @@ class ClaudeSettingsStateTest {
         fun `inequality on different claudePath`() {
             val a = ClaudeSettings.State(claudePath = "/a")
             val b = ClaudeSettings.State(claudePath = "/b")
-            assertNotEquals(a, b)
-        }
-
-        @Test
-        fun `inequality on different enableCompletion`() {
-            val a = ClaudeSettings.State(enableCompletion = false)
-            val b = ClaudeSettings.State(enableCompletion = true)
             assertNotEquals(a, b)
         }
 
@@ -210,13 +180,6 @@ class ClaudeSettingsStateTest {
             val b = ClaudeSettings.State(autoAcceptPermissions = false)
             assertNotEquals(a, b)
         }
-
-        @Test
-        fun `inequality on different completionDebounceMs`() {
-            val a = ClaudeSettings.State(completionDebounceMs = 500L)
-            val b = ClaudeSettings.State(completionDebounceMs = 1000L)
-            assertNotEquals(a, b)
-        }
     }
 
     @Nested
@@ -238,8 +201,6 @@ class ClaudeSettingsStateTest {
             val state = ClaudeSettings.State(
                 claudePath = "/opt/claude",
                 model = ClaudeConstants.MODEL_SONNET,
-                enableCompletion = true,
-                completionDebounceMs = 200L,
                 maxSessions = 3,
                 fontSize = 16,
                 sendSelectionContext = false,
@@ -248,8 +209,6 @@ class ClaudeSettingsStateTest {
             )
             assertEquals("/opt/claude", state.claudePath)
             assertEquals(ClaudeConstants.MODEL_SONNET, state.model)
-            assertTrue(state.enableCompletion)
-            assertEquals(200L, state.completionDebounceMs)
             assertEquals(3, state.maxSessions)
             assertEquals(16, state.fontSize)
             assertFalse(state.sendSelectionContext)

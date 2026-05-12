@@ -40,11 +40,6 @@ class ClaudeConstantsTest {
         fun `previous sonnet model id`() {
             assertEquals("claude-sonnet-4-5-20250514", ClaudeConstants.MODEL_SONNET_PREV)
         }
-
-        @Test
-        fun `completion model is haiku`() {
-            assertEquals(ClaudeConstants.MODEL_HAIKU, ClaudeConstants.COMPLETION_MODEL)
-        }
     }
 
     @Nested

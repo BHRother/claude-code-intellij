@@ -40,7 +40,6 @@
         <li>Auto-accept file changes or require manual approval</li>
         <li>Project tree auto-refreshes when Claude creates or modifies files</li>
         <li>Cost tracking per response</li>
-        <li>Experimental inline code completion (opt-in)</li>
     </ul>
 
     <h3>Prerequisites</h3>
@@ -77,7 +76,6 @@
     <ul>
         <li><b>Console integration</b> — right-click in Run/Debug console to debug exceptions, explain log flows, or send output to Claude</li>
         <li><b>Folder-level test generation</b> — generate tests for all source files in a directory (supports 14+ languages)</li>
-        <li><b>Inline code completion</b> — experimental Claude-powered code suggestions triggered while typing (opt-in)</li>
         <li><b>Send to Claude</b> — send selected code, files, or console output as context from any right-click menu</li>
         <li><b>Interactive permission prompts</b> — Allow/Deny buttons in the chat panel for Claude's file operations</li>
         <li><b>Inline diffs</b> — expandable diff viewers showing old vs. new code for every edit Claude makes</li>
@@ -123,12 +121,6 @@
 
         <applicationService
                 serviceImplementation="com.claudecode.settings.ClaudeSettings"/>
-
-        <!-- Completion -->
-        <completion.contributor
-                language="any"
-                implementationClass="com.claudecode.completion.ClaudeCompletionContributor"
-                order="last"/>
     </extensions>
 
     <actions>

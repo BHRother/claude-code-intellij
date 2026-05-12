@@ -49,20 +49,6 @@ class ClaudeSettingsConfigurable : Configurable {
                         .bindIntValue(settings.state::maxSessions)
                 }
             }
-            collapsibleGroup("Code Completion (Experimental)") {
-                row {
-                    checkBox("Enable Claude code completion")
-                        .bindSelected(settings.state::enableCompletion)
-                        .comment("Uses Haiku for inline suggestions. Slow — spawns a CLI process per request. Not recommended for production use yet.")
-                }
-                row("Debounce (ms):") {
-                    spinner(100..5000, 100)
-                        .bindIntValue(
-                            { settings.state.completionDebounceMs.toInt() },
-                            { settings.state.completionDebounceMs = it.toLong() }
-                        )
-                }
-            }
             group("Permissions") {
                 row {
                     checkBox("Auto-accept file changes")
