@@ -103,7 +103,7 @@ class WelcomePanel(
             <div class='section'>
                 Trigger Claude from anywhere you're working, no chat needed:
                 <ul>
-                    <li><b>Edit with Claude</b> <span class='shortcut'>Cmd+Shift+K</span> / <span class='shortcut'>Ctrl+Shift+K</span> — select code, describe the change, review the diff, accept or reject</li>
+                    <li><b>Edit with Claude</b> <span class='shortcut'>Cmd+Alt+K</span> / <span class='shortcut'>Ctrl+Alt+K</span> (or the Claude icon in the floating code toolbar) — select code, describe the change, review the diff, accept or reject</li>
                     <li><b>Fix with Claude</b> <span class='shortcut'>Alt+Enter</span> — on any IDE-detected error or warning, pick "Fix with Claude" from the intentions menu</li>
                     <li><b>Generate Commit Message</b> — button in the VCS commit dialog turns your staged diff into a commit message matching your project's style</li>
                     <li><b>Apply</b> — click the <span class='shortcut'>[apply]</span> link on any chat code block to replace the active editor's selection with that code</li>
@@ -127,7 +127,7 @@ class WelcomePanel(
             <div class='section'>
                 <ul>
                     <li><span class='shortcut'>Cmd+Shift+I / Ctrl+Shift+I</span> — toggle this Claude panel</li>
-                    <li><span class='shortcut'>Cmd+Shift+K / Ctrl+Shift+K</span> — Edit with Claude (in any editor)</li>
+                    <li><span class='shortcut'>Cmd+Alt+K / Ctrl+Alt+K</span> — Edit with Claude (in any editor)</li>
                     <li><span class='shortcut'>Alt+Enter</span> — Fix with Claude (on errors/warnings)</li>
                     <li><span class='shortcut'>Enter</span> / <span class='shortcut'>Shift+Enter</span> — send / new line in chat input</li>
                     <li><span class='shortcut'>Escape</span> or <span class='shortcut'>Ctrl+C / Cmd+C</span> twice — stop current request</li>

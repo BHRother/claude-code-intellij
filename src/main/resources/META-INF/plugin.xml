@@ -14,7 +14,7 @@
 
     <h3>Inline AI Actions</h3>
     <ul>
-        <li><b>Edit with Claude</b> (<b>Cmd+Shift+K</b> / <b>Ctrl+Shift+K</b>) — select code, describe a change in plain English, review the diff, and accept or reject.</li>
+        <li><b>Edit with Claude</b> (<b>Cmd+Alt+K</b> / <b>Ctrl+Alt+K</b>, or the Claude icon in the floating code toolbar) — select code, describe a change in plain English, review the diff, and accept or reject.</li>
         <li><b>Fix with Claude</b> — Alt+Enter on any IDE-detected error or warning to get an AI-powered quick-fix that lives next to IntelliJ's own intentions.</li>
         <li><b>Generate Commit Message</b> — one click in the VCS commit dialog turns your staged diff into a Conventional Commits-style message.</li>
         <li><b>Apply</b> link on every chat code block — replace the selection in your active editor with the suggested code after a diff review.</li>
@@ -49,7 +49,7 @@
     <h3>Productivity</h3>
     <ul>
         <li>Editable model selector: type any Claude model ID; remembers models seen in past sessions</li>
-        <li>Keyboard shortcuts: <b>Cmd+Shift+I</b> to toggle the chat panel, <b>Cmd+Shift+K</b> for inline edit (Ctrl variants on Windows/Linux)</li>
+        <li>Keyboard shortcuts: <b>Cmd+Shift+I</b> to toggle the chat panel, <b>Cmd+Alt+K</b> for inline edit (Ctrl variants on Windows/Linux)</li>
         <li>Stop requests with Escape or double Ctrl+C / Cmd+C</li>
         <li>Auto-accept file changes or require manual approval per operation</li>
         <li>Project tree auto-refreshes when Claude creates, modifies, or deletes files</li>
@@ -66,7 +66,7 @@
     <change-notes><![CDATA[
     <h3>1.0.3</h3>
     <ul>
-        <li><b>Edit with Claude (Cmd+Shift+K / Ctrl+Shift+K)</b> — select code, hit the shortcut, type a natural-language instruction. Claude returns the rewrite and a side-by-side diff opens; Accept replaces the selection, Reject discards it. Works in any editor regardless of language.</li>
+        <li><b>Edit with Claude</b> — select code, hit <code>Cmd+Alt+K</code> / <code>Ctrl+Alt+K</code> (or click the Claude icon in the floating code toolbar, alongside Show Context Actions / Extract / Surround), then type a natural-language instruction. Claude returns the rewrite and a side-by-side diff opens; Accept replaces the selection, Reject discards it. Works in any editor regardless of language.</li>
         <li><b>Apply button on chat code blocks</b> — every fenced code block in the Claude chat now has an <code>[apply]</code> link next to <code>[copy]</code>. Select the target code in the active editor, click apply, review the diff, and accept to replace your selection in-place.</li>
         <li><b>Generate Commit Message with Claude</b> — new button in the VCS commit dialog toolbar. Reads <code>git diff --cached</code> (falls back to <code>git diff</code>), sends it to Claude, and fills the commit message field with a Conventional Commits-style result.</li>
         <li><b>Fix with Claude quick-fix intention</b> — Alt+Enter on any IDE-detected error or warning now offers "Fix with Claude". Sends the offending lines + the inspection message to Claude, shows a diff, applies on accept. Works for any language and any inspection (compiler errors, linter warnings, code-style issues).</li>
@@ -190,8 +190,9 @@
                     text="Edit with Claude…"
                     description="Edit the selected code with a natural-language instruction"
                     icon="/icons/claude.svg">
-                <keyboard-shortcut keymap="$default" first-keystroke="shift control K"/>
-                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="shift meta K"/>
+                <keyboard-shortcut keymap="$default" first-keystroke="control alt K"/>
+                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="alt meta K"/>
+                <add-to-group group-id="Floating.CodeToolbar" anchor="last"/>
             </action>
 
             <separator/>
