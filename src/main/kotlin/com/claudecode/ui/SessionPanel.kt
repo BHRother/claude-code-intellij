@@ -45,6 +45,7 @@ class SessionPanel(
     private var ctrlCDispatcher: java.awt.KeyEventDispatcher? = null
     private val changedFiles = mutableListOf<Pair<String, String>>() // (filePath, action)
     private val copyableCommands = mutableMapOf<String, String>()
+    private val applyableCode = mutableMapOf<String, Pair<String, String>>() // key -> (code, lang)
     private val pendingDiffs = mutableMapOf<String, String>() // diffId -> diff HTML
     private val expandedDiffs = mutableSetOf<String>()
     private var copyCommandCounter = 0
@@ -157,6 +158,11 @@ class SessionPanel(
                             val text = copyableCommands[key] ?: return@addHyperlinkListener
                             this@SessionPanel.inputArea.text = text
                             this@SessionPanel.inputArea.requestFocusInWindow()
+                        }
+                        href.contains("/action/apply/") -> {
+                            val key = href.substringAfter("/action/apply/")
+                            val payload = applyableCode[key] ?: return@addHyperlinkListener
+                            applyCodeBlockToActiveEditor(payload.first, payload.second)
                         }
                         href.contains("/action/inline-diff/") -> {
                             val diffId = href.substringAfter("/action/inline-diff/")
@@ -464,11 +470,19 @@ class SessionPanel(
             resetEditConsolidation()
             stopThinkingAnimation()
             statusLabel.text = "Claude is responding..."
-            val rendered = MarkdownRenderer.render(text) { codeContent ->
-                val key = "code-${copyCommandCounter++}"
-                copyableCommands[key] = codeContent
-                "<a href=\"http://localhost/action/copy/$key\">[copy]</a>"
-            }
+            val rendered = MarkdownRenderer.render(
+                text,
+                copyLinkGenerator = { codeContent ->
+                    val key = "code-${copyCommandCounter++}"
+                    copyableCommands[key] = codeContent
+                    "<a href=\"http://localhost/action/copy/$key\">[copy]</a>"
+                },
+                applyLinkGenerator = { codeContent, lang ->
+                    val key = "apply-${copyCommandCounter++}"
+                    applyableCode[key] = codeContent to lang
+                    "<a href=\"http://localhost/action/apply/$key\">[apply]</a>"
+                },
+            )
             appendHtml("<div class='claude-msg'>$rendered</div>")
         }
     }
@@ -962,6 +976,40 @@ class SessionPanel(
             val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(path) ?: return@invokeLater
             FileEditorManager.getInstance(project).openFile(vf, true)
         }
+    }
+
+    private fun applyCodeBlockToActiveEditor(code: String, lang: String) {
+        val editor = FileEditorManager.getInstance(project).selectedTextEditor
+        if (editor == null) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                "Open a file in the editor first, then select the code you want to replace.",
+                "Apply Code Block",
+            )
+            return
+        }
+        val selectionModel = editor.selectionModel
+        if (!selectionModel.hasSelection()) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                "Select the target code in the active editor first. The code block will replace your selection.",
+                "Apply Code Block",
+            )
+            return
+        }
+        val oldText = selectionModel.selectedText ?: return
+        val vf = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getFile(editor.document)
+        val filePath = vf?.path ?: ("snippet.$lang".ifEmpty { "snippet.txt" })
+
+        val dialog = com.claudecode.inline.InlineEditDiffDialog(project, oldText, code, filePath) {
+            val start = selectionModel.selectionStart
+            val end = selectionModel.selectionEnd
+            com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(
+                project, "Apply Code Block", null,
+                { editor.document.replaceString(start, end, code) },
+            )
+        }
+        dialog.show()
     }
 
     private fun buildInlineDiffHtml(oldStr: String, newStr: String, lang: String = "", filePath: String? = null): String {

@@ -31,7 +31,11 @@ object MarkdownRenderer {
         "undefined", "typeof", "export", "require", "module", "yield", "from"
     )
 
-    fun render(markdown: String, copyLinkGenerator: ((String) -> String)? = null): String {
+    fun render(
+        markdown: String,
+        copyLinkGenerator: ((String) -> String)? = null,
+        applyLinkGenerator: ((String, String) -> String)? = null,
+    ): String {
         val lines = markdown.lines()
         val html = StringBuilder()
         var i = 0
@@ -52,7 +56,8 @@ object MarkdownRenderer {
                 i++ // skip closing ```
                 val rawCode = codeLines.toString()
                 val copyLink = copyLinkGenerator?.invoke(rawCode) ?: ""
-                html.append(renderCodeBlock(rawCode, lang, copyLink))
+                val applyLink = applyLinkGenerator?.invoke(rawCode, lang) ?: ""
+                html.append(renderCodeBlock(rawCode, lang, copyLink, applyLink))
                 continue
             }
 
@@ -65,13 +70,20 @@ object MarkdownRenderer {
         return html.toString()
     }
 
-    internal fun renderCodeBlock(code: String, lang: String, copyLink: String = ""): String {
+    internal fun renderCodeBlock(
+        code: String,
+        lang: String,
+        copyLink: String = "",
+        applyLink: String = "",
+    ): String {
         val keywords = keywordsForLanguage(lang)
 
         val highlighted = highlightCode(escapeHtml(code), keywords)
         val langLabel = if (lang.isNotEmpty()) lang else ""
-        val header = if (langLabel.isNotEmpty() || copyLink.isNotEmpty()) {
-            "<span style='color: #808080;'>$langLabel</span> $copyLink<br/>"
+        val hasHeader = langLabel.isNotEmpty() || copyLink.isNotEmpty() || applyLink.isNotEmpty()
+        val header = if (hasHeader) {
+            val sep = if (copyLink.isNotEmpty() && applyLink.isNotEmpty()) " " else ""
+            "<span style='color: #808080;'>$langLabel</span> $copyLink$sep$applyLink<br/>"
         } else ""
 
         return "<div style='background-color: #2B2D30; padding: 2px;'>" +

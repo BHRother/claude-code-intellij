@@ -7,38 +7,52 @@
     <h2>Claude Code for IntelliJ</h2>
     <p>
         Bring the full power of Claude Code directly into your IDE. Chat with Claude in a side panel,
-        run multiple sessions in parallel, and let Claude read, edit, and create files in your project —
-        all without leaving IntelliJ.
+        edit code inline with natural-language instructions, fix errors with one click in the
+        Alt+Enter menu, generate commit messages from your staged diff, and let Claude read, edit,
+        and create files in your project — all without leaving IntelliJ.
     </p>
+
+    <h3>Inline AI Actions</h3>
+    <ul>
+        <li><b>Edit with Claude</b> (<b>Cmd+Shift+K</b> / <b>Ctrl+Shift+K</b>) — select code, describe a change in plain English, review the diff, and accept or reject.</li>
+        <li><b>Fix with Claude</b> — Alt+Enter on any IDE-detected error or warning to get an AI-powered quick-fix that lives next to IntelliJ's own intentions.</li>
+        <li><b>Generate Commit Message</b> — one click in the VCS commit dialog turns your staged diff into a Conventional Commits-style message.</li>
+        <li><b>Apply</b> link on every chat code block — replace the selection in your active editor with the suggested code after a diff review.</li>
+    </ul>
 
     <h3>Chat Panel</h3>
     <ul>
-        <li>Side panel with multiple parallel Claude Code sessions</li>
+        <li>Multiple parallel Claude Code sessions in a side panel</li>
         <li>Project-aware: Claude works in your open project's directory</li>
         <li>Session memory: Claude remembers context across messages</li>
         <li>Markdown rendering with syntax-highlighted code blocks</li>
         <li>Tool-use indicators with colored status signals and diff summaries</li>
-        <li>Clickable file links for every file Claude creates or modifies</li>
-        <li>Changed files summary after each response, grouped by folder</li>
+        <li><b>File chips</b> — drag/drop, copy/paste, or type a filename to attach files as context; resolves bare filenames against your project</li>
+        <li><b>Large-text paste chips</b> — long pastes collapse into a compact chip; double-click to expand back into the input</li>
+        <li><b>Smart auto-scroll</b> — follows new output unless you've scrolled up to read; "Jump to latest" button keeps you in control</li>
+        <li>Inline diffs: expandable old vs. new for every edit Claude makes, with consolidated stats per file</li>
+        <li>Clickable file links and a changed-files summary grouped by folder</li>
         <li>Copy and re-edit buttons on messages and code blocks</li>
     </ul>
 
     <h3>Right-Click Context Menu</h3>
     <ul>
-        <li><b>Explain with Claude</b> — understand code, methods, or entire files</li>
-        <li><b>Refactor with Claude</b> — get suggestions for readability, performance, and best practices</li>
-        <li><b>Generate Tests with Claude</b> — create unit tests for selected code or whole files</li>
-        <li><b>Fix with Claude</b> — identify and fix bugs in selected code</li>
+        <li><b>Explain</b> — understand code, methods, files, or entire folders (recursive summaries)</li>
+        <li><b>Refactor</b> — get suggestions for readability, performance, and best practices</li>
+        <li><b>Generate Tests</b> — create unit tests for selected code, whole files, or every source file in a folder (14+ languages)</li>
+        <li><b>Fix</b> — identify and fix bugs in selected code</li>
+        <li><b>Open Claude Session Here</b> — right-click any folder to start a new session rooted there</li>
+        <li><b>Debug with Claude</b> — right-click in the Run/Debug console to send exceptions, log flows, or output to Claude</li>
     </ul>
-    <p>Works from both the editor (selected code or full file) and the project tree (file-level actions).</p>
+    <p>Works from the editor, project tree, and Run/Debug console.</p>
 
     <h3>Productivity</h3>
     <ul>
-        <li>Model selection: choose between Opus, Sonnet, and Haiku</li>
-        <li>Keyboard shortcut: <b>Cmd+Shift+I</b> (macOS) / <b>Ctrl+Shift+I</b> (Windows/Linux)</li>
+        <li>Editable model selector: type any Claude model ID; remembers models seen in past sessions</li>
+        <li>Keyboard shortcuts: <b>Cmd+Shift+I</b> to toggle the chat panel, <b>Cmd+Shift+K</b> for inline edit (Ctrl variants on Windows/Linux)</li>
         <li>Stop requests with Escape or double Ctrl+C / Cmd+C</li>
-        <li>Auto-accept file changes or require manual approval</li>
-        <li>Project tree auto-refreshes when Claude creates or modifies files</li>
+        <li>Auto-accept file changes or require manual approval per operation</li>
+        <li>Project tree auto-refreshes when Claude creates, modifies, or deletes files</li>
         <li>Cost tracking per response</li>
     </ul>
 
@@ -50,6 +64,16 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.0.3</h3>
+    <ul>
+        <li><b>Edit with Claude (Cmd+Shift+K / Ctrl+Shift+K)</b> — select code, hit the shortcut, type a natural-language instruction. Claude returns the rewrite and a side-by-side diff opens; Accept replaces the selection, Reject discards it. Works in any editor regardless of language.</li>
+        <li><b>Apply button on chat code blocks</b> — every fenced code block in the Claude chat now has an <code>[apply]</code> link next to <code>[copy]</code>. Select the target code in the active editor, click apply, review the diff, and accept to replace your selection in-place.</li>
+        <li><b>Generate Commit Message with Claude</b> — new button in the VCS commit dialog toolbar. Reads <code>git diff --cached</code> (falls back to <code>git diff</code>), sends it to Claude, and fills the commit message field with a Conventional Commits-style result.</li>
+        <li><b>Fix with Claude quick-fix intention</b> — Alt+Enter on any IDE-detected error or warning now offers "Fix with Claude". Sends the offending lines + the inspection message to Claude, shows a diff, applies on accept. Works for any language and any inspection (compiler errors, linter warnings, code-style issues).</li>
+        <li><b>Expandable paste chips</b> — large-text paste chips can now be double-clicked to expand back into the input. Cursor changes to a pointer and a tooltip reminds you of the gesture; file chips remain non-expandable to keep their path semantics intact.</li>
+        <li><b>Inline code completion removed</b> — the experimental opt-in was dropped after evaluation: with the CLI-based auth path, latency was 1.5-3s per suggestion vs. sub-200ms for purpose-built FIM models. Will revisit if Anthropic ships a low-latency endpoint.</li>
+    </ul>
+
     <h3>1.0.2</h3>
     <ul>
         <li><b>Smart auto-scroll</b> — chat output only follows new messages when you're already at the bottom; if you've scrolled up to read, your position is preserved. A floating "↓ Jump to latest" button appears in the bottom-right when you're scrolled away.</li>
@@ -121,6 +145,12 @@
 
         <applicationService
                 serviceImplementation="com.claudecode.settings.ClaudeSettings"/>
+
+        <!-- Fix-with-Claude intention: appears on Alt+Enter when caret is on an error/warning -->
+        <intentionAction>
+            <className>com.claudecode.inspection.ClaudeFixIntentionAction</className>
+            <category>Claude Code</category>
+        </intentionAction>
     </extensions>
 
     <actions>
@@ -154,6 +184,15 @@
                     text="Fix with Claude"
                     description="Fix errors in selected code using Claude"
                     icon="/icons/claude.svg"/>
+
+            <action id="ClaudeCode.InlineEdit"
+                    class="com.claudecode.inline.InlineEditAction"
+                    text="Edit with Claude…"
+                    description="Edit the selected code with a natural-language instruction"
+                    icon="/icons/claude.svg">
+                <keyboard-shortcut keymap="$default" first-keystroke="shift control K"/>
+                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="shift meta K"/>
+            </action>
 
             <separator/>
 
@@ -250,6 +289,16 @@
                 text="New Claude Session"
                 description="Start a new Claude Code session"
                 icon="AllIcons.General.Add"/>
+
+        <!-- Generate commit message from staged changes -->
+        <action id="ClaudeCode.GenerateCommitMessage"
+                class="com.claudecode.vcs.GenerateCommitMessageAction"
+                text="Generate Commit Message with Claude"
+                description="Generate a commit message from staged changes using Claude"
+                icon="/icons/claude.svg">
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>
+            <add-to-group group-id="Vcs.CommitExecutor.Actions" anchor="last"/>
+        </action>
 
         <!-- Toggle Claude Code panel -->
         <action id="ClaudeCode.Toggle"

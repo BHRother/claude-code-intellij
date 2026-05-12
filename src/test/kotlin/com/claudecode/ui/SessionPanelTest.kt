@@ -22,9 +22,9 @@ class SessionPanelTest {
 
         @Test
         fun `markdown renderer handles code blocks used in SessionPanel`() {
-            val result = MarkdownRenderer.render("```kotlin\nval x = 1\n```") { code ->
+            val result = MarkdownRenderer.render("```kotlin\nval x = 1\n```", copyLinkGenerator = { code ->
                 "<a>copy</a>"
-            }
+            })
             assertTrue(result.contains("<a>copy</a>"))
         }
     }

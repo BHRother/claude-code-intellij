@@ -211,10 +211,10 @@ class MarkdownRendererTest {
         fun `invokes copy link generator for code blocks`() {
             val markdown = "```\nsome code\n```"
             var capturedCode: String? = null
-            val result = MarkdownRenderer.render(markdown) { code ->
+            val result = MarkdownRenderer.render(markdown, copyLinkGenerator = { code ->
                 capturedCode = code
                 "<a>copy</a>"
-            }
+            })
             assertEquals("some code", capturedCode)
             assertTrue(result.contains("<a>copy</a>"))
         }
@@ -269,20 +269,20 @@ class MarkdownRendererTest {
         @Test
         fun `copy link generator not invoked for non-code lines`() {
             var invoked = false
-            MarkdownRenderer.render("just text") {
+            MarkdownRenderer.render("just text", copyLinkGenerator = {
                 invoked = true
                 ""
-            }
+            })
             assertFalse(invoked)
         }
 
         @Test
         fun `copy link generator receives empty string for empty code block`() {
             var capturedCode: String? = null
-            MarkdownRenderer.render("```\n\n```") { code ->
+            MarkdownRenderer.render("```\n\n```", copyLinkGenerator = { code ->
                 capturedCode = code
                 ""
-            }
+            })
             // Empty code block should still have some content (possibly empty string)
             assertNotNull(capturedCode)
         }

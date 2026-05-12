@@ -93,27 +93,44 @@ class WelcomePanel(
                     <li>Run multiple sessions in parallel as separate tabs</li>
                     <li>Claude works in your project directory — it can read, edit, and create files</li>
                     <li>Session history is preserved so Claude remembers context</li>
+                    <li>Drag/drop or paste files into the input — they become compact <code>📎</code> chips</li>
+                    <li>Large pastes collapse into a chip — double-click to expand back into the input</li>
+                    <li>Every code block in the chat has <span class='shortcut'>[copy]</span> and <span class='shortcut'>[apply]</span> links</li>
+                </ul>
+            </div>
+
+            <h2>Inline AI Actions</h2>
+            <div class='section'>
+                Trigger Claude from anywhere you're working, no chat needed:
+                <ul>
+                    <li><b>Edit with Claude</b> <span class='shortcut'>Cmd+Shift+K</span> / <span class='shortcut'>Ctrl+Shift+K</span> — select code, describe the change, review the diff, accept or reject</li>
+                    <li><b>Fix with Claude</b> <span class='shortcut'>Alt+Enter</span> — on any IDE-detected error or warning, pick "Fix with Claude" from the intentions menu</li>
+                    <li><b>Generate Commit Message</b> — button in the VCS commit dialog turns your staged diff into a commit message matching your project's style</li>
+                    <li><b>Apply</b> — click the <span class='shortcut'>[apply]</span> link on any chat code block to replace the active editor's selection with that code</li>
                 </ul>
             </div>
 
             <h2>Right-Click Actions</h2>
             <div class='section'>
-                Select code in the editor or a file in the project tree, then right-click:
+                Select code in the editor, or right-click a file/folder in the project tree:
                 <ul>
-                    <li><b>Explain with Claude</b> — understand what code does and why</li>
+                    <li><b>Explain with Claude</b> — understand what code does and why (works on folders too)</li>
                     <li><b>Refactor with Claude</b> — get improvement suggestions</li>
-                    <li><b>Generate Tests with Claude</b> — create unit tests for your code</li>
+                    <li><b>Generate Tests with Claude</b> — for selected code, whole files, or every source file in a folder</li>
                     <li><b>Fix with Claude</b> — identify and fix bugs in selected code</li>
+                    <li><b>Open Claude Session Here</b> — start a session rooted at any folder</li>
+                    <li><b>Debug with Claude</b> — right-click in the Run/Debug console</li>
                 </ul>
             </div>
 
             <h2>Keyboard Shortcuts</h2>
             <div class='section'>
                 <ul>
-                    <li><span class='shortcut'>Enter</span> — send message</li>
-                    <li><span class='shortcut'>Shift+Enter</span> — new line</li>
-                    <li><span class='shortcut'>Escape</span> — stop current request</li>
-                    <li><span class='shortcut'>Ctrl+C / Cmd+C</span> twice — stop current request</li>
+                    <li><span class='shortcut'>Cmd+Shift+I / Ctrl+Shift+I</span> — toggle this Claude panel</li>
+                    <li><span class='shortcut'>Cmd+Shift+K / Ctrl+Shift+K</span> — Edit with Claude (in any editor)</li>
+                    <li><span class='shortcut'>Alt+Enter</span> — Fix with Claude (on errors/warnings)</li>
+                    <li><span class='shortcut'>Enter</span> / <span class='shortcut'>Shift+Enter</span> — send / new line in chat input</li>
+                    <li><span class='shortcut'>Escape</span> or <span class='shortcut'>Ctrl+C / Cmd+C</span> twice — stop current request</li>
                 </ul>
             </div>
 
@@ -121,7 +138,8 @@ class WelcomePanel(
             <div class='section'>
                 <ul>
                     <li>Files created or modified by Claude are shown as clickable links</li>
-                    <li>A summary of all changed files appears after each response</li>
+                    <li>Inline diffs show old vs. new for every edit — click <span class='shortcut'>[▼ diff]</span> to expand</li>
+                    <li>A summary of all changed files appears after each response, grouped by folder</li>
                     <li>The project tree refreshes automatically</li>
                 </ul>
             </div>
@@ -130,7 +148,7 @@ class WelcomePanel(
             <div class='section'>
                 <a href="http://localhost/action/settings">Open Settings</a> &nbsp;<span class='dim'>(Settings &rarr; Tools &rarr; Claude Code)</span>
                 <ul>
-                    <li>Choose your preferred Claude model</li>
+                    <li>Choose your preferred Claude model (editable — type any model ID)</li>
                     <li>Configure the CLI path</li>
                     <li>Toggle auto-accept file changes</li>
                 </ul>

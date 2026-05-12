@@ -585,7 +585,7 @@ class PasteAwareInputArea(
         } else {
             "Pasted #$pasteCounter · ${content.length} chars"
         }
-        insertChipViaBypass(fb, offset, label, content, tooltip = null)
+        insertChipViaBypass(fb, offset, label, content, tooltip = null, expandable = true)
     }
 
     private fun insertFileChipViaBypass(fb: DocumentFilter.FilterBypass, offset: Int, file: File) {
@@ -594,7 +594,8 @@ class PasteAwareInputArea(
             fb, offset,
             label = "📎 ${file.name}",
             content = "@${file.absolutePath}",
-            tooltip = file.absolutePath
+            tooltip = file.absolutePath,
+            expandable = false,
         )
     }
 
@@ -603,9 +604,10 @@ class PasteAwareInputArea(
         offset: Int,
         label: String,
         content: String,
-        tooltip: String?
+        tooltip: String?,
+        expandable: Boolean = false,
     ) {
-        val chip = createChip(label, content, tooltip)
+        val chip = createChip(label, content, tooltip, expandable = expandable)
         val style = textPane.addStyle("chip-$pasteCounter", null)
         StyleConstants.setComponent(style, chip)
         try {
@@ -771,7 +773,7 @@ class PasteAwareInputArea(
     private fun insertFileReference(file: File) {
         val displayName = file.name.ifEmpty { file.absolutePath }
         val content = "@${file.absolutePath}"
-        insertChip(label = "📎 $displayName", content = content, tooltip = file.absolutePath)
+        insertChip(label = "📎 $displayName", content = content, tooltip = file.absolutePath, expandable = false)
     }
 
     private fun insertChipAtCaret(content: String, lineCount: Int) {
@@ -780,7 +782,7 @@ class PasteAwareInputArea(
         } else {
             "Pasted #${pasteCounter + 1} · ${content.length} chars"
         }
-        insertChip(label, content, tooltip = null)
+        insertChip(label, content, tooltip = null, expandable = true)
     }
 
     /**
@@ -789,9 +791,9 @@ class PasteAwareInputArea(
      * chip. Caret positioning is deferred via [SwingUtilities.invokeLater] so
      * it survives any same-cycle event handlers that might otherwise reset it.
      */
-    private fun insertChip(label: String, content: String, tooltip: String?) {
+    private fun insertChip(label: String, content: String, tooltip: String?, expandable: Boolean = false) {
         pasteCounter++
-        val chip = createChip(label, content, tooltip)
+        val chip = createChip(label, content, tooltip, expandable = expandable)
         val style = textPane.addStyle("chip-$pasteCounter", null)
         StyleConstants.setComponent(style, chip)
 
@@ -823,7 +825,12 @@ class PasteAwareInputArea(
         }
     }
 
-    private fun createChip(label: String, content: String, tooltip: String? = null): JPanel {
+    private fun createChip(
+        label: String,
+        content: String,
+        tooltip: String? = null,
+        expandable: Boolean = false,
+    ): JPanel {
         val chip = object : JPanel(BorderLayout(4, 0)) {
             override fun getAlignmentY(): Float = 0.8f
             override fun getPreferredSize(): Dimension {
@@ -859,11 +866,59 @@ class PasteAwareInputArea(
             })
         }
 
+        if (expandable) {
+            val expandTooltip = "Double-click to expand into the input"
+            chip.toolTipText = tooltip ?: expandTooltip
+            labelComp.toolTipText = tooltip ?: expandTooltip
+            labelComp.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            val expandListener = object : java.awt.event.MouseAdapter() {
+                override fun mouseClicked(e: java.awt.event.MouseEvent?) {
+                    if (e != null && e.clickCount >= 2 && !e.isConsumed) {
+                        expandChip(chip, content)
+                        e.consume()
+                    }
+                }
+            }
+            chip.addMouseListener(expandListener)
+            labelComp.addMouseListener(expandListener)
+        }
+
         chip.add(labelComp, BorderLayout.CENTER)
         chip.add(removeBtn, BorderLayout.EAST)
 
         chipContentMap[chip] = content
         return chip
+    }
+
+    private fun expandChip(chip: JPanel, content: String) {
+        val doc = textPane.styledDocument
+        val root = doc.defaultRootElement
+        for (i in 0 until root.elementCount) {
+            val para = root.getElement(i)
+            for (j in 0 until para.elementCount) {
+                val elem = para.getElement(j)
+                if (StyleConstants.getComponent(elem.attributes) === chip) {
+                    val start = elem.startOffset
+                    val len = elem.endOffset - start
+                    isProgrammaticInsert = true
+                    try {
+                        doc.remove(start, len)
+                        doc.insertString(start, content, null)
+                    } catch (e: BadLocationException) {
+                        LOG.warn("Failed to expand chip", e)
+                    } finally {
+                        isProgrammaticInsert = false
+                    }
+                    chipContentMap.remove(chip)
+                    SwingUtilities.invokeLater {
+                        val caretTarget = (start + content.length).coerceAtMost(doc.length)
+                        textPane.caretPosition = caretTarget
+                        textPane.requestFocusInWindow()
+                    }
+                    return
+                }
+            }
+        }
     }
 
     private fun removeChip(chip: JPanel) {
