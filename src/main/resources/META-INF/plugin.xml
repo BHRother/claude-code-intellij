@@ -64,6 +64,11 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.0.4</h3>
+    <ul>
+        <li><b>Deprecated API fix</b> — replaced <code>ReadAction.compute(ThrowableComputable)</code> with <code>Application.runReadAction(Computable)</code> in the chat-input filename resolver. Flagged by the JetBrains plugin verifier as deprecated and slated for removal in a future platform release. No behaviour change.</li>
+    </ul>
+
     <h3>1.0.3</h3>
     <ul>
         <li><b>Edit with Claude</b> — select code, hit <code>Cmd+Alt+K</code> / <code>Ctrl+Alt+K</code> (or click the Claude icon in the floating code toolbar, alongside Show Context Actions / Extract / Surround), then type a natural-language instruction. Claude returns the rewrite and a side-by-side diff opens; Accept replaces the selection, Reject discards it. Works in any editor regardless of language.</li>
