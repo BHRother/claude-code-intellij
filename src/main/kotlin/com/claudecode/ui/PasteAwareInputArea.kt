@@ -672,71 +672,75 @@ class PasteAwareInputArea(
         // them straight from the EDT throws IllegalStateException — the
         // previous implementation was silently swallowing that, which is why
         // stem search never worked for files like NewSessionAction.kt where
-        // IntelliJ's tree hides the extension.
-        return com.intellij.openapi.application.ReadAction.compute<String?, Throwable> {
-            val scope = com.intellij.psi.search.GlobalSearchScope.projectScope(project)
+        // IntelliJ's tree hides the extension. We use Application.runReadAction
+        // (not ReadAction.nonBlocking().executeSynchronously()) because paste
+        // handlers can fire on the EDT, and executeSynchronously deadlocks there.
+        return com.intellij.openapi.application.ApplicationManager.getApplication().runReadAction(
+            com.intellij.openapi.util.Computable<String?> {
+                val scope = com.intellij.psi.search.GlobalSearchScope.projectScope(project)
 
-            // 1. Exact filename match (covers the case where the clipboard
-            // already carries the extension, e.g. "FileContextActions.kt").
-            try {
-                val exact = com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(fileName, scope)
-                uniquePath(exact)?.let { return@compute it }
-            } catch (e: Throwable) {
-                LOG.warn("FilenameIndex exact lookup failed for '$fileName'", e)
-            }
-
-            // 2. Common-extension probing — deterministic and cheap. This is
-            // what fixes the "NewSessionAction" case: try
-            // "NewSessionAction.kt", "NewSessionAction.java", etc.
-            if (!fileName.contains('.')) {
-                for (ext in COMMON_FILE_EXTENSIONS) {
-                    try {
-                        val withExt = "$fileName.$ext"
-                        val files = com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(withExt, scope)
-                        uniquePath(files)?.let { return@compute it }
-                    } catch (e: Throwable) {
-                        LOG.warn("FilenameIndex ext lookup failed for '$fileName.$ext'", e)
-                    }
-                }
-            }
-
-            // 3. Stem scan — slower fallback that handles uncommon extensions.
-            if (!fileName.contains('.')) {
+                // 1. Exact filename match (covers the case where the clipboard
+                // already carries the extension, e.g. "FileContextActions.kt").
                 try {
-                    val all = com.intellij.psi.search.FilenameIndex.getAllFilenames(project)
-                    val stemMatches = all.filter { it.substringBeforeLast('.', "") == fileName }
-                    val resolvedPaths = stemMatches.flatMap { name ->
-                        com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(name, scope).map { it.path }
-                    }.distinct()
-                    if (resolvedPaths.size == 1) return@compute resolvedPaths.first()
+                    val exact = com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(fileName, scope)
+                    uniquePath(exact)?.let { return@Computable it }
                 } catch (e: Throwable) {
-                    LOG.warn("FilenameIndex stem scan failed for '$fileName'", e)
+                    LOG.warn("FilenameIndex exact lookup failed for '$fileName'", e)
                 }
-            }
 
-            // 4. Last-resort VFS walk over project content. Reliable but
-            // O(N) in project size — only runs when the index lookups
-            // couldn't decide.
-            try {
-                val matches = mutableListOf<String>()
-                com.intellij.openapi.roots.ProjectFileIndex.getInstance(project).iterateContent { file ->
-                    if (!file.isDirectory) {
-                        val matchesName = file.name == fileName ||
-                            (!fileName.contains('.') && file.nameWithoutExtension == fileName)
-                        if (matchesName) {
-                            matches.add(file.path)
-                            if (matches.size > 1) return@iterateContent false // ambiguous, stop
+                // 2. Common-extension probing — deterministic and cheap. This is
+                // what fixes the "NewSessionAction" case: try
+                // "NewSessionAction.kt", "NewSessionAction.java", etc.
+                if (!fileName.contains('.')) {
+                    for (ext in COMMON_FILE_EXTENSIONS) {
+                        try {
+                            val withExt = "$fileName.$ext"
+                            val files = com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(withExt, scope)
+                            uniquePath(files)?.let { return@Computable it }
+                        } catch (e: Throwable) {
+                            LOG.warn("FilenameIndex ext lookup failed for '$fileName.$ext'", e)
                         }
                     }
-                    true
                 }
-                if (matches.size == 1) return@compute matches.first()
-            } catch (e: Throwable) {
-                LOG.warn("ProjectFileIndex walk failed for '$fileName'", e)
-            }
 
-            null
-        }
+                // 3. Stem scan — slower fallback that handles uncommon extensions.
+                if (!fileName.contains('.')) {
+                    try {
+                        val all = com.intellij.psi.search.FilenameIndex.getAllFilenames(project)
+                        val stemMatches = all.filter { it.substringBeforeLast('.', "") == fileName }
+                        val resolvedPaths = stemMatches.flatMap { name ->
+                            com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(name, scope).map { it.path }
+                        }.distinct()
+                        if (resolvedPaths.size == 1) return@Computable resolvedPaths.first()
+                    } catch (e: Throwable) {
+                        LOG.warn("FilenameIndex stem scan failed for '$fileName'", e)
+                    }
+                }
+
+                // 4. Last-resort VFS walk over project content. Reliable but
+                // O(N) in project size — only runs when the index lookups
+                // couldn't decide.
+                try {
+                    val matches = mutableListOf<String>()
+                    com.intellij.openapi.roots.ProjectFileIndex.getInstance(project).iterateContent { file ->
+                        if (!file.isDirectory) {
+                            val matchesName = file.name == fileName ||
+                                (!fileName.contains('.') && file.nameWithoutExtension == fileName)
+                            if (matchesName) {
+                                matches.add(file.path)
+                                if (matches.size > 1) return@iterateContent false // ambiguous, stop
+                            }
+                        }
+                        true
+                    }
+                    if (matches.size == 1) return@Computable matches.first()
+                } catch (e: Throwable) {
+                    LOG.warn("ProjectFileIndex walk failed for '$fileName'", e)
+                }
+
+                null
+            }
+        )
     }
 
     private fun uniquePath(files: Collection<com.intellij.openapi.vfs.VirtualFile>): String? {
