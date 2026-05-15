@@ -150,7 +150,7 @@ class WelcomePanel(
                 <ul>
                     <li>Choose your preferred Claude model (editable — type any model ID)</li>
                     <li>Configure the CLI path</li>
-                    <li>Toggle auto-accept file changes</li>
+                    <li>Pick a permission mode: <code>acceptEdits</code> (default — file edits allowed, shell blocked), <code>bypassPermissions</code> (allow everything), or <code>plan</code> (read-only)</li>
                 </ul>
             </div>
 

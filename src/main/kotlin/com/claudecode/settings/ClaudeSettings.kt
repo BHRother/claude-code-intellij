@@ -17,7 +17,7 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         var maxSessions: Int = 10,
         var fontSize: Int = 13,
         var sendSelectionContext: Boolean = true,
-        var autoAcceptPermissions: Boolean = true,
+        var permissionMode: String = com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS,
         var customModels: String = ""
     )
 

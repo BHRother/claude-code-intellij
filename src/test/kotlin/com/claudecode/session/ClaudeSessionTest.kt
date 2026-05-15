@@ -61,74 +61,6 @@ class ClaudeSessionTest {
     }
 
     @Nested
-    inner class IsPermissionPrompt {
-        @Test
-        fun `detects allow with question mark`() {
-            assertTrue(session.isPermissionPrompt("Do you want to allow this action?"))
-        }
-
-        @Test
-        fun `detects permission with y-n`() {
-            assertTrue(session.isPermissionPrompt("Permission required (y/n)"))
-        }
-
-        @Test
-        fun `detects approve with yes`() {
-            assertTrue(session.isPermissionPrompt("Do you approve? yes/no"))
-        }
-
-        @Test
-        fun `is case insensitive`() {
-            assertTrue(session.isPermissionPrompt("ALLOW this? YES"))
-        }
-
-        @Test
-        fun `rejects non-permission text`() {
-            assertFalse(session.isPermissionPrompt("Hello world"))
-        }
-
-        @Test
-        fun `rejects partial matches without confirmation keyword`() {
-            assertFalse(session.isPermissionPrompt("Allow this action"))
-        }
-
-        @Test
-        fun `rejects partial matches without permission keyword`() {
-            assertFalse(session.isPermissionPrompt("Do you want to proceed? y/n"))
-        }
-
-        @Test
-        fun `detects allow with yes`() {
-            assertTrue(session.isPermissionPrompt("Allow file creation? yes"))
-        }
-
-        @Test
-        fun `detects permission with question mark`() {
-            assertTrue(session.isPermissionPrompt("Permission to write file?"))
-        }
-
-        @Test
-        fun `detects approve with y-n`() {
-            assertTrue(session.isPermissionPrompt("Approve this change (y/n)"))
-        }
-
-        @Test
-        fun `rejects empty string`() {
-            assertFalse(session.isPermissionPrompt(""))
-        }
-
-        @Test
-        fun `rejects text with only permission keyword`() {
-            assertFalse(session.isPermissionPrompt("allow"))
-        }
-
-        @Test
-        fun `rejects text with only confirmation keyword`() {
-            assertFalse(session.isPermissionPrompt("yes or no"))
-        }
-    }
-
-    @Nested
     inner class ShellQuote {
         @Test
         fun `quotes simple string`() {
@@ -852,7 +784,6 @@ class TestSessionListener : SessionListener {
         lastChangedFile = filePath
         lastChangedAction = action
     }
-    override fun onPermissionRequest(session: ClaudeSession, prompt: String): Boolean = false
     override fun onTaskProgress(session: ClaudeSession, description: String) { lastTaskProgress = description }
     override fun onModelInfo(session: ClaudeSession, model: String) { lastModel = model }
     override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean) {

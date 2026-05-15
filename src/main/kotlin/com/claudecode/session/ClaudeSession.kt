@@ -20,7 +20,6 @@ interface SessionListener {
     fun onThinking(session: ClaudeSession, thinking: String?)
     fun onToolUse(session: ClaudeSession, tool: String, detail: String?, diffSummary: String?, diffData: Pair<String, String>? = null, filePath: String? = null)
     fun onFileChanged(session: ClaudeSession, filePath: String, action: String)
-    fun onPermissionRequest(session: ClaudeSession, prompt: String): Boolean
     fun onTaskProgress(session: ClaudeSession, description: String)
     fun onModelInfo(session: ClaudeSession, model: String)
     fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean)
@@ -105,9 +104,14 @@ class ClaudeSession(
             claudeArgs.add("--model")
             claudeArgs.add(model)
         }
-        if (settings.autoAcceptPermissions) {
-            claudeArgs.add("--dangerously-skip-permissions")
-        }
+        // Always pass --permission-mode explicitly. In -p mode the CLI silently
+        // refuses tool calls that need permission and never emits an interactive
+        // prompt, so the user picks one of the modes that fits their tolerance
+        // (acceptEdits / bypassPermissions / plan) instead of an unreachable
+        // "ask each time" flow.
+        val permMode = settings.permissionMode.ifBlank { com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS }
+        claudeArgs.add("--permission-mode")
+        claudeArgs.add(permMode)
         if (sessionId != null) {
             claudeArgs.add("--resume")
             claudeArgs.add(sessionId!!)
@@ -142,8 +146,6 @@ class ClaudeSession(
 
         val responseText = StringBuilder()
         var costUsd: Double? = null
-        val processOutputStream = process!!.outputStream
-        var pendingNonJsonLines = StringBuilder()
 
         // With redirectErrorStream(true) + script, everything comes on stdout
         try {
@@ -162,22 +164,16 @@ class ClaudeSession(
 
                     if (cleaned.isBlank()) return@forEachLine
 
-                    // Only parse JSON lines
+                    // Only parse JSON lines. Non-JSON lines are debug noise from
+                    // the CLI/pty wrapper — log and discard. (We used to scan
+                    // these for interactive permission prompts, but -p mode
+                    // never emits them; permission control happens via the
+                    // --permission-mode flag.)
                     if (!cleaned.startsWith("{")) {
                         debug("non-json[$lineNum]: ${cleaned.take(200)}")
-                        pendingNonJsonLines.appendLine(cleaned)
-
-                        // Detect permission prompts
-                        if (isPermissionPrompt(cleaned)) {
-                            val fullPrompt = pendingNonJsonLines.toString().trim()
-                            pendingNonJsonLines.clear()
-                            debug("Permission prompt detected: $fullPrompt")
-                            handlePermissionPrompt(fullPrompt, processOutputStream)
-                        }
                         return@forEachLine
                     }
 
-                    pendingNonJsonLines.clear()
                     debug("json[$lineNum]: ${cleaned.take(200)}${if (cleaned.length > 200) "..." else ""}")
 
                     try {
@@ -342,32 +338,6 @@ class ClaudeSession(
             }
         }
         return null
-    }
-
-    internal fun isPermissionPrompt(line: String): Boolean {
-        val lower = line.lowercase()
-        return (lower.contains("allow") || lower.contains("permission") || lower.contains("approve")) &&
-            (lower.contains("?") || lower.contains("y/n") || lower.contains("yes"))
-    }
-
-    private fun handlePermissionPrompt(prompt: String, outputStream: OutputStream) {
-        // Ask listeners (UI) for permission — returns true if allowed
-        var allowed = false
-        for (listener in listeners) {
-            try {
-                allowed = listener.onPermissionRequest(this, prompt)
-                break
-            } catch (_: Exception) {}
-        }
-
-        val response = if (allowed) "yes" else "no"
-        debug("Permission response: $response")
-        try {
-            outputStream.write("$response\n".toByteArray())
-            outputStream.flush()
-        } catch (e: Exception) {
-            debug("Failed to write permission response: ${e.message}")
-        }
     }
 
     internal fun buildDiffSummary(tool: String, input: com.google.gson.JsonObject?): String? {

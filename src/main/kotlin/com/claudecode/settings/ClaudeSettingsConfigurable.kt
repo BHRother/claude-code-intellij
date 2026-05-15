@@ -50,10 +50,20 @@ class ClaudeSettingsConfigurable : Configurable {
                 }
             }
             group("Permissions") {
-                row {
-                    checkBox("Auto-accept file changes")
-                        .bindSelected(settings.state::autoAcceptPermissions)
-                        .comment("Allow Claude to create, edit, and delete files without prompting. Disable to require manual approval for each change.")
+                row("Permission mode:") {
+                    val modes = com.claudecode.ClaudeConstants.PERMISSION_MODES
+                    comboBox(modes)
+                        .bindItem(
+                            { settings.state.permissionMode.takeIf { it in modes }
+                                ?: com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS },
+                            { settings.state.permissionMode = it ?: com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS }
+                        )
+                        .comment(
+                            "<b>acceptEdits</b> (recommended): file edits go through, shell commands are blocked.<br/>" +
+                                "<b>bypassPermissions</b>: Claude can run any tool including shell commands.<br/>" +
+                                "<b>plan</b>: read-only — Read/Grep/Glob only, useful for exploratory chats.<br/>" +
+                                "Maps to the CLI's <code>--permission-mode</code> flag."
+                        )
                 }
             }
             group("Context") {

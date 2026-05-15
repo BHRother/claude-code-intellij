@@ -40,9 +40,9 @@ class ClaudeSettingsStateTest {
         }
 
         @Test
-        fun `autoAcceptPermissions is enabled by default`() {
+        fun `permissionMode defaults to acceptEdits`() {
             val state = ClaudeSettings.State()
-            assertTrue(state.autoAcceptPermissions)
+            assertEquals(ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS, state.permissionMode)
         }
 
         @Test
@@ -81,10 +81,10 @@ class ClaudeSettingsStateTest {
         }
 
         @Test
-        fun `autoAcceptPermissions is mutable`() {
+        fun `permissionMode is mutable`() {
             val state = ClaudeSettings.State()
-            state.autoAcceptPermissions = false
-            assertFalse(state.autoAcceptPermissions)
+            state.permissionMode = ClaudeConstants.PERMISSION_MODE_BYPASS
+            assertEquals(ClaudeConstants.PERMISSION_MODE_BYPASS, state.permissionMode)
         }
 
         @Test
@@ -146,7 +146,7 @@ class ClaudeSettingsStateTest {
                 maxSessions = 5,
                 fontSize = 16,
                 sendSelectionContext = false,
-                autoAcceptPermissions = false,
+                permissionMode = ClaudeConstants.PERMISSION_MODE_BYPASS,
                 customModels = "claude-test-1"
             )
             val copy = original.copy()
@@ -175,9 +175,9 @@ class ClaudeSettingsStateTest {
         }
 
         @Test
-        fun `inequality on different autoAcceptPermissions`() {
-            val a = ClaudeSettings.State(autoAcceptPermissions = true)
-            val b = ClaudeSettings.State(autoAcceptPermissions = false)
+        fun `inequality on different permissionMode`() {
+            val a = ClaudeSettings.State(permissionMode = ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS)
+            val b = ClaudeSettings.State(permissionMode = ClaudeConstants.PERMISSION_MODE_BYPASS)
             assertNotEquals(a, b)
         }
     }
@@ -204,7 +204,7 @@ class ClaudeSettingsStateTest {
                 maxSessions = 3,
                 fontSize = 16,
                 sendSelectionContext = false,
-                autoAcceptPermissions = false,
+                permissionMode = ClaudeConstants.PERMISSION_MODE_PLAN,
                 customModels = "claude-custom-1,claude-custom-2"
             )
             assertEquals("/opt/claude", state.claudePath)
@@ -212,7 +212,7 @@ class ClaudeSettingsStateTest {
             assertEquals(3, state.maxSessions)
             assertEquals(16, state.fontSize)
             assertFalse(state.sendSelectionContext)
-            assertFalse(state.autoAcceptPermissions)
+            assertEquals(ClaudeConstants.PERMISSION_MODE_PLAN, state.permissionMode)
             assertEquals("claude-custom-1,claude-custom-2", state.customModels)
         }
     }

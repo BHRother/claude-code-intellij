@@ -27,7 +27,6 @@ class SessionManagerTest {
                 override fun onThinking(session: ClaudeSession, thinking: String?) {}
                 override fun onToolUse(session: ClaudeSession, tool: String, detail: String?, diffSummary: String?, diffData: Pair<String, String>?, filePath: String?) {}
                 override fun onFileChanged(session: ClaudeSession, filePath: String, action: String) {}
-                override fun onPermissionRequest(session: ClaudeSession, prompt: String): Boolean = false
                 override fun onTaskProgress(session: ClaudeSession, description: String) {}
                 override fun onModelInfo(session: ClaudeSession, model: String) {}
                 override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean) {}

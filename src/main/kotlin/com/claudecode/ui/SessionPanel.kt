@@ -51,7 +51,7 @@ class SessionPanel(
     private var copyCommandCounter = 0
     private var toolUseCounter = 0
     private val toolUseIdToHtmlId = mutableMapOf<String, String>()
-    private var permissionPanel: JPanel? = null
+    private var permissionHintShown = false
 
     // Edit consolidation state: consecutive Edit calls on the same file update one UI entry
     private var lastEditFilePath: String? = null
@@ -163,6 +163,9 @@ class SessionPanel(
                             val key = href.substringAfter("/action/apply/")
                             val payload = applyableCode[key] ?: return@addHyperlinkListener
                             applyCodeBlockToActiveEditor(payload.first, payload.second)
+                        }
+                        href.contains("/action/open-settings") -> {
+                            openClaudeSettings()
                         }
                         href.contains("/action/inline-diff/") -> {
                             val diffId = href.substringAfter("/action/inline-diff/")
@@ -406,6 +409,7 @@ class SessionPanel(
         inputArea.clear()
         autoNameTab(text)
         appendUserMessage(text)
+        permissionHintShown = false
         setBusyState(true)
         session.sendMessage(text)
     }
@@ -414,6 +418,7 @@ class SessionPanel(
         if (session.isBusy) return
         autoNameTab(text)
         appendUserMessage(text)
+        permissionHintShown = false
         setBusyState(true)
         session.sendMessage(text)
     }
@@ -484,6 +489,7 @@ class SessionPanel(
                 },
             )
             appendHtml("<div class='claude-msg'>$rendered</div>")
+            maybeShowPermissionHint(text)
         }
     }
 
@@ -695,79 +701,6 @@ class SessionPanel(
         }
     }
 
-    override fun onPermissionRequest(session: ClaudeSession, prompt: String): Boolean {
-        val latch = java.util.concurrent.CountDownLatch(1)
-        val result = java.util.concurrent.atomic.AtomicBoolean(false)
-
-        ApplicationManager.getApplication().invokeLater {
-            appendHtml("<div class='system-msg'>Permission requested:</div>")
-            appendHtml("<div class='tool-msg'>${escapeHtml(prompt)}</div>")
-
-            val settings = ClaudeSettings.getInstance().state
-            val monoFont = Font(com.claudecode.ClaudeConstants.FONT_FAMILY, Font.PLAIN, settings.fontSize)
-
-            val bar = JPanel(FlowLayout(FlowLayout.LEFT, 8, 4)).apply {
-                background = JBColor(Color(0x2B, 0x2D, 0x30), Color(0x2B, 0x2D, 0x30))
-                border = JBUI.Borders.compound(
-                    JBUI.Borders.customLine(JBColor(Color(0xD9, 0x77, 0x57), Color(0xD9, 0x77, 0x57)), 1, 0, 0, 0),
-                    JBUI.Borders.empty(4, 8)
-                )
-
-                val label = JLabel("Allow this action?").apply {
-                    font = monoFont.deriveFont(Font.BOLD, 12f)
-                    foreground = JBColor(Color(0xD9, 0x77, 0x57), Color(0xD9, 0x77, 0x57))
-                }
-
-                val allowBtn = JButton("Allow").apply {
-                    font = monoFont.deriveFont(12f)
-                    addActionListener {
-                        result.set(true)
-                        appendHtml("<div class='system-msg'><span style='color: #6A8759;'>Allowed</span></div>")
-                        removePermissionBar()
-                        latch.countDown()
-                    }
-                }
-
-                val denyBtn = JButton("Deny").apply {
-                    font = monoFont.deriveFont(12f)
-                    addActionListener {
-                        result.set(false)
-                        appendHtml("<div class='system-msg'><span style='color: #FF6B68;'>Denied</span></div>")
-                        removePermissionBar()
-                        latch.countDown()
-                    }
-                }
-
-                add(label)
-                add(allowBtn)
-                add(denyBtn)
-            }
-
-            permissionPanel = bar
-            // Insert above the input area
-            val bottomContainer = inputArea.parent?.parent ?: return@invokeLater
-            if (bottomContainer is JPanel) {
-                bottomContainer.add(bar, 0)
-                bottomContainer.revalidate()
-                bottomContainer.repaint()
-            }
-        }
-
-        latch.await()
-        return result.get()
-    }
-
-    private fun removePermissionBar() {
-        val bar = permissionPanel ?: return
-        val parent = bar.parent
-        if (parent != null) {
-            parent.remove(bar)
-            parent.revalidate()
-            parent.repaint()
-        }
-        permissionPanel = null
-    }
-
     override fun onTaskProgress(session: ClaudeSession, description: String) {
         ApplicationManager.getApplication().invokeLater {
             appendHtml("<div class='tool-msg'>${escapeHtml(description)}</div>")
@@ -976,6 +909,48 @@ class SessionPanel(
             val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(path) ?: return@invokeLater
             FileEditorManager.getInstance(project).openFile(vf, true)
         }
+    }
+
+    /**
+     * Detects responses where the model is asking the user to grant permission
+     * (because the CLI silently blocked a tool in -p mode) and surfaces an
+     * inline hint pointing to Settings. Only fires once per response so it
+     * doesn't pile up across streaming chunks.
+     */
+    private fun maybeShowPermissionHint(text: String) {
+        if (permissionHintShown) return
+        if (!looksLikePermissionBlocked(text)) return
+        permissionHintShown = true
+
+        val currentMode = ClaudeSettings.getInstance().state.permissionMode
+        appendHtml(
+            "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
+                "<span style='color: #D9B263;'>⚠ Looks like a tool was blocked by your current permission mode " +
+                "(<code>$currentMode</code>).</span><br/>" +
+                "Open <a href=\"http://localhost/action/open-settings\">Settings</a> and switch to " +
+                "<b>acceptEdits</b> (lets file writes through) or <b>bypassPermissions</b> (allows everything " +
+                "including shell commands) — then re-run your request." +
+                "</div>"
+        )
+    }
+
+    internal fun looksLikePermissionBlocked(text: String): Boolean {
+        val lower = text.lowercase()
+        // The model's wording when a tool fails due to permission. Tuned for
+        // false-negative tolerance: the hint is purely informational, so the
+        // worst case of a false positive is one extra suggestion.
+        if (lower.contains("don't have permission") || lower.contains("do not have permission")) return true
+        if (lower.contains("permission denied") || lower.contains("permission was denied")) return true
+        if (lower.contains("permission to use the") || lower.contains("permission to use this")) return true
+        if (Regex("\\bapprove\\b.*\\btool\\b").containsMatchIn(lower)) return true
+        if (Regex("\\bblocked\\b.*\\b(tool|permission)\\b").containsMatchIn(lower)) return true
+        return false
+    }
+
+    private fun openClaudeSettings() {
+        com.intellij.openapi.options.ShowSettingsUtil.getInstance()
+            .showSettingsDialog(project, com.claudecode.ClaudeConstants.TOOL_WINDOW_ID)
     }
 
     private fun applyCodeBlockToActiveEditor(code: String, lang: String) {
