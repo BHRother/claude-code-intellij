@@ -19,7 +19,11 @@ class ClaudeSettingsConfigurable : Configurable {
                     textField()
                         .bindText(settings.state::claudePath)
                         .columns(COLUMNS_LARGE)
-                        .comment("Path to the 'claude' CLI executable")
+                        .comment(
+                            "Bare name (resolved via PATH / npm) or an absolute path. " +
+                                "On Windows, set the absolute path to <code>claude.cmd</code> " +
+                                "(usually <code>%APPDATA%\\npm\\claude.cmd</code>) if auto-detection fails."
+                        )
                 }
                 row("Model:") {
                     val allModels = settings.getAllModels()

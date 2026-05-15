@@ -132,12 +132,13 @@ class ClaudeSession(
         debug("Command: ${command.joinToString(" ") { shellQuote(it) }}")
 
         val shellPath = resolveShellPath()
+        val effectivePath = augmentedPath(claudePath, shellPath)
         val pb = ProcessBuilder(command)
             .directory(File(workingDirectory))
             .redirectErrorStream(true)
 
-        if (shellPath != null) {
-            pb.environment()["PATH"] = shellPath
+        if (effectivePath != null) {
+            pb.environment()["PATH"] = effectivePath
         }
         pb.environment()["TERM"] = com.claudecode.ClaudeConstants.ENV_TERM_VALUE
         pb.environment()["NO_COLOR"] = "1"
@@ -416,6 +417,7 @@ class ClaudeSession(
     }
 
     companion object {
+        private val staticLog = Logger.getInstance(ClaudeSession::class.java)
         private var cachedResolvedPath: String? = null
         private var cachedShellPath: String? = null
 
@@ -462,26 +464,15 @@ class ClaudeSession(
             if (isWindows() && configured.matches(Regex("^[A-Za-z]:[\\\\/].*"))) return configured
             if (cachedResolvedPath != null) return cachedResolvedPath!!
 
-            // Windows: use `where` (built-in) instead of `which`. npm installs
-            // `claude.cmd`, `claude.ps1`, and a Unix-shell `claude` script.
-            // ProcessBuilder needs the .cmd variant to launch successfully
-            // from cmd.exe / PowerShell semantics, so prefer that extension.
             if (isWindows()) {
-                try {
-                    val pb = ProcessBuilder("where", configured).redirectErrorStream(true)
-                    val proc = pb.start()
-                    val lines = proc.inputStream.bufferedReader().readLines()
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                    val finished = proc.waitFor(5, TimeUnit.SECONDS)
-                    if (finished && proc.exitValue() == 0 && lines.isNotEmpty()) {
-                        val preferred = lines.firstOrNull { it.endsWith(".cmd", true) }
-                            ?: lines.firstOrNull { it.endsWith(".exe", true) }
-                            ?: lines.first()
-                        cachedResolvedPath = preferred
-                        return preferred
-                    }
-                } catch (_: Exception) {}
+                resolveOnWindows(configured)?.let {
+                    cachedResolvedPath = it
+                    return it
+                }
+                staticLog.warn("Could not resolve '$configured' on Windows via where, " +
+                    "common npm locations, or `npm config get prefix`. " +
+                    "Falling back to bare name; ProcessBuilder will likely fail. " +
+                    "Set an absolute path in Settings → Tools → Claude Code → Claude CLI path.")
                 return configured
             }
 
@@ -498,6 +489,105 @@ class ClaudeSession(
                 }
             } catch (_: Exception) {}
             return configured
+        }
+
+        /**
+         * Layered Windows resolution. The IntelliJ JVM's PATH is whatever the
+         * launcher inherited at startup, which often *omits* the user-PATH
+         * entries added by the Node.js MSI installer (where %APPDATA%\npm\
+         * normally sits). So a bare "claude" can be perfectly runnable from
+         * cmd.exe yet invisible to ProcessBuilder. We try, in order:
+         *
+         *   1. `where <name>` against the inherited PATH (cheap, often works
+         *      when the JVM did inherit the right PATH).
+         *   2. Direct probes of the well-known npm install locations:
+         *      %APPDATA%\npm\, %LOCALAPPDATA%\npm\, %ProgramFiles%\nodejs\.
+         *   3. `npm config get prefix` (npm itself usually IS on PATH because
+         *      Node's installer puts npm.cmd in C:\Program Files\nodejs\, a
+         *      system-PATH location).
+         */
+        private fun resolveOnWindows(configured: String): String? {
+            // 1. `where`
+            try {
+                val pb = ProcessBuilder("where", configured).redirectErrorStream(true)
+                val proc = pb.start()
+                val lines = proc.inputStream.bufferedReader().readLines()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                val finished = proc.waitFor(5, TimeUnit.SECONDS)
+                if (finished && proc.exitValue() == 0 && lines.isNotEmpty()) {
+                    val preferred = pickWindowsCandidate(lines)
+                    staticLog.info("resolveOnWindows: `where $configured` -> $preferred")
+                    return preferred
+                }
+                staticLog.info("resolveOnWindows: `where $configured` returned no matches " +
+                    "(exit=${if (finished) proc.exitValue() else "timeout"})")
+            } catch (e: Exception) {
+                staticLog.info("resolveOnWindows: `where` failed: ${e.message}")
+            }
+
+            // 2. Direct probes of common npm install dirs
+            val nameCandidates = listOf("$configured.cmd", "$configured.exe", configured)
+            val dirCandidates = listOfNotNull(
+                System.getenv("APPDATA")?.let { "$it\\npm" },
+                System.getenv("LOCALAPPDATA")?.let { "$it\\npm" },
+                System.getenv("ProgramFiles")?.let { "$it\\nodejs" },
+                System.getenv("ProgramFiles(x86)")?.let { "$it\\nodejs" },
+            )
+            for (dir in dirCandidates) {
+                for (name in nameCandidates) {
+                    val candidate = "$dir\\$name"
+                    if (File(candidate).isFile) {
+                        staticLog.info("resolveOnWindows: probed candidate exists: $candidate")
+                        return candidate
+                    }
+                }
+            }
+
+            // 3. Ask npm for its global prefix
+            try {
+                val pb = ProcessBuilder("npm", "config", "get", "prefix").redirectErrorStream(true)
+                val proc = pb.start()
+                val output = proc.inputStream.bufferedReader().readText().trim()
+                val finished = proc.waitFor(8, TimeUnit.SECONDS)
+                if (finished && proc.exitValue() == 0 && output.isNotBlank()) {
+                    val prefix = output.lines().firstOrNull { it.isNotBlank() }?.trim() ?: ""
+                    if (prefix.isNotBlank()) {
+                        for (name in nameCandidates) {
+                            val candidate = "$prefix\\$name"
+                            if (File(candidate).isFile) {
+                                staticLog.info("resolveOnWindows: npm prefix '$prefix' -> $candidate")
+                                return candidate
+                            }
+                        }
+                        staticLog.info("resolveOnWindows: npm prefix '$prefix' has no $configured.cmd/exe/bare")
+                    }
+                }
+            } catch (e: Exception) {
+                staticLog.info("resolveOnWindows: `npm config get prefix` failed: ${e.message}")
+            }
+
+            return null
+        }
+
+        private fun pickWindowsCandidate(lines: List<String>): String =
+            lines.firstOrNull { it.endsWith(".cmd", true) }
+                ?: lines.firstOrNull { it.endsWith(".exe", true) }
+                ?: lines.first()
+
+        /**
+         * On Windows, prepend the resolved binary's directory to PATH so the
+         * spawned process can find sibling tools (e.g. other npm-installed
+         * binaries that claude.cmd may shell out to). No-op on Unix or when
+         * the binary path doesn't have a directory component.
+         */
+        fun augmentedPath(binaryPath: String, basePath: String?): String? {
+            if (!isWindows()) return basePath
+            val binDir = File(binaryPath).parentFile?.absolutePath ?: return basePath
+            if (basePath.isNullOrBlank()) return binDir
+            val sep = ";"
+            if (basePath.split(sep).any { it.equals(binDir, ignoreCase = true) }) return basePath
+            return "$binDir$sep$basePath"
         }
     }
 }
