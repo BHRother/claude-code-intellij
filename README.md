@@ -75,11 +75,11 @@ The plugin zip will be at `build/distributions/claude-code-intellij-<version>.zi
 
 ## Platform Support
 
-| Platform | Status |
-|----------|--------|
-| macOS | ✅ Supported |
-| Linux | ✅ Supported |
-| Windows | ❌ Not supported |
+| Platform | Status       |
+|----------|--------------|
+| macOS    | ✅ Supported |
+| Linux    | ✅ Supported |
+| Windows  | ✅ Supported |
 
 **IDE compatibility:** IntelliJ IDEA 2024.1+ (build 241–252.*)
 
@@ -91,4 +91,4 @@ Each chat session runs as an independent CLI process with session resumption sup
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

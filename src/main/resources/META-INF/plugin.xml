@@ -67,6 +67,8 @@
     <change-notes><![CDATA[
     <h3>1.0.5</h3>
     <ul>
+        <li><b>Generate Commit Message: reads selected changes from the dialog</b> — previously the action ran <code>git diff --cached</code>, which could be stale relative to what the user had ticked in the commit dialog (forcing a "refresh" click before generation). Now reads <code>VcsDataKeys.SELECTED_CHANGES</code> directly and diffs exactly those file paths against <code>HEAD</code>; falls back to staged-then-unstaged if no selection is available.</li>
+        <li><b>Generate Commit Message: better synthesis across multi-file change sets</b> — the prompt now receives a <code>git diff --stat</code> summary alongside the patch, and tells Claude explicitly to find the unifying intent across all files rather than describing the most prominent one.</li>
         <li><b>Deprecated API fix</b> — replaced <code>FileChooserDescriptorFactory.createSingleFileDescriptor()</code> with the equivalent <code>FileChooserDescriptor</code> constructor in the Settings → Browse… button. Flagged by the JetBrains plugin verifier; no behaviour change.</li>
     </ul>
 

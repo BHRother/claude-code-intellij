@@ -31,13 +31,24 @@ class GenerateCommitMessageAction : AnAction() {
         val commitMessage = e.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL) ?: return
         val workingDir = project.basePath ?: return
 
+        // Read what's *actually selected in the commit dialog* — i.e. the
+        // changes the user has ticked. This sidesteps the case where git's
+        // index hasn't caught up with the dialog state yet (which would
+        // otherwise force the user to click "refresh" before Claude saw the
+        // full picture).
+        val selectedPaths = collectSelectedPathsFromDialog(e)
+
         ProgressManager.getInstance().run(object : Task.Backgroundable(
             project, "Claude: generating commit message", true
         ) {
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
 
-                val diff = collectDiff(workingDir)
+                val (stat, diff) = if (selectedPaths.isNotEmpty()) {
+                    collectDiffForPaths(workingDir, selectedPaths)
+                } else {
+                    collectDiffWithStat(workingDir)
+                }
                 if (diff.isBlank()) {
                     ApplicationManager.getApplication().invokeLater {
                         Messages.showInfoMessage(
@@ -51,7 +62,7 @@ class GenerateCommitMessageAction : AnAction() {
 
                 val recentCommits = collectRecentCommits(workingDir)
                 val truncated = truncateForPrompt(diff)
-                val prompt = buildPrompt(truncated, recentCommits)
+                val prompt = buildPrompt(truncated, stat, recentCommits)
                 val result = ClaudeOneShot.run(workingDir, prompt, timeoutSeconds = 90)
                 val message = cleanMessage(result.text)
 
@@ -70,10 +81,74 @@ class GenerateCommitMessageAction : AnAction() {
         })
     }
 
-    private fun collectDiff(workingDir: String): String {
-        val staged = runGit(workingDir, listOf("diff", "--cached"))
-        if (staged.isNotBlank()) return staged
-        return runGit(workingDir, listOf("diff"))
+    /**
+     * Returns (stat, patch) for whichever of staged / unstaged actually has
+     * changes. The stat summary (one line per file with insert/delete counts)
+     * is included separately in the prompt so Claude sees the *shape* of the
+     * change set before drowning in the patch bytes — important when one file
+     * has a large diff that would otherwise dominate attention.
+     */
+    private fun collectDiffWithStat(workingDir: String): Pair<String, String> {
+        val stagedPatch = runGit(workingDir, listOf("diff", "--cached"))
+        if (stagedPatch.isNotBlank()) {
+            return Pair(runGit(workingDir, listOf("diff", "--cached", "--stat")), stagedPatch)
+        }
+        val unstagedPatch = runGit(workingDir, listOf("diff"))
+        if (unstagedPatch.isNotBlank()) {
+            return Pair(runGit(workingDir, listOf("diff", "--stat")), unstagedPatch)
+        }
+        return Pair("", "")
+    }
+
+    /**
+     * Pull the absolute paths of the changes the user currently has selected
+     * in the IntelliJ commit dialog. Reads VcsDataKeys.SELECTED_CHANGES, which
+     * reflects the dialog's tick-box state and stays in sync without the user
+     * needing to click "refresh". A Change can come from various sources
+     * (working tree, staged, etc.) so we fall back through the available
+     * revisions to find a path.
+     */
+    private fun collectSelectedPathsFromDialog(e: AnActionEvent): List<String> {
+        val changes = e.getData(VcsDataKeys.SELECTED_CHANGES) ?: return emptyList()
+        return changes.mapNotNull { change ->
+            change.virtualFile?.path
+                ?: change.afterRevision?.file?.path
+                ?: change.beforeRevision?.file?.path
+        }
+    }
+
+    /**
+     * Diff exactly the files the user selected in the commit dialog, regardless
+     * of whether they're already in git's index. `git diff HEAD -- <paths>`
+     * shows the working-tree-vs-HEAD diff for those paths, which is what those
+     * files will look like after the commit lands.
+     *
+     * Paths are passed relative to the repo root with forward slashes — git
+     * accepts both on Windows but using forward slashes is the safe, portable
+     * choice.
+     */
+    private fun collectDiffForPaths(workingDir: String, absolutePaths: List<String>): Pair<String, String> {
+        val workingDirFile = File(workingDir)
+        val relativePaths = absolutePaths.mapNotNull { path ->
+            val file = File(path)
+            val rel = if (file.isAbsolute) {
+                try {
+                    workingDirFile.toPath().relativize(file.toPath()).toString()
+                } catch (_: Exception) {
+                    return@mapNotNull null
+                }
+            } else {
+                path
+            }
+            rel.replace('\\', '/').takeIf { it.isNotBlank() && !it.startsWith("..") }
+        }
+        if (relativePaths.isEmpty()) return Pair("", "")
+
+        val statArgs = listOf("diff", "HEAD", "--stat", "--") + relativePaths
+        val patchArgs = listOf("diff", "HEAD", "--") + relativePaths
+        val patch = runGit(workingDir, patchArgs)
+        if (patch.isBlank()) return Pair("", "")
+        return Pair(runGit(workingDir, statArgs), patch)
     }
 
     /**
@@ -118,7 +193,7 @@ class GenerateCommitMessageAction : AnAction() {
         return diff.take(maxChars) + "\n\n[…diff truncated, ${diff.length - maxChars} chars omitted]"
     }
 
-    private fun buildPrompt(diff: String, recentCommits: String): String {
+    private fun buildPrompt(diff: String, stat: String, recentCommits: String): String {
         val styleSection = if (recentCommits.isNotBlank()) {
             """
             These are the most recent commits from this project. Match their style — prefix conventions (or lack thereof), capitalization, voice, subject length, whether bodies are typical, whether scopes are used, anything that defines this project's commit voice. If the project doesn't use Conventional Commits, don't introduce them.
@@ -129,25 +204,40 @@ class GenerateCommitMessageAction : AnAction() {
 
             """.trimIndent() + "\n"
         } else {
-            // Empty repo or git unavailable — fall back to a sensible default style.
             """
             No recent commits available for style reference. Use a short imperative subject (under 72 chars), no prefix unless the change is purely chore/docs/test. Add a body only if non-trivial.
 
             """.trimIndent() + "\n"
         }
 
+        val statSection = if (stat.isNotBlank()) {
+            """
+            <files-changed>
+            $stat
+            </files-changed>
+
+            """.trimIndent() + "\n"
+        } else ""
+
         return """
             Write a commit message for the staged changes below.
 
+            How to approach this:
+            1. The change set may span multiple files. Use the <files-changed> summary to see the full shape, then read the diff to understand each change.
+            2. Find the *unifying intent* tying the files together (e.g. "switching license", "adding feature X", "fixing a regression"). The subject line must reflect that unifying intent, not just the most prominent or largest single file.
+            3. If the change set has no single theme, write a subject that names the bundle (e.g. "Misc cleanup") and use the body to list each concern.
+            4. Every distinct concern the change set addresses should be covered — either by the subject (if it's one thing) or by the body (if it's several).
+
             $styleSection
-            Rules that always apply:
+            $statSection
+            Rules:
             - Imperative mood ("add" not "added", "fix" not "fixed").
-            - Capture intent and the "why": what behavior changes, what problem is solved, what constraint motivated the change. Avoid file-by-file enumeration of what was edited — the diff already shows that.
-            - Subject line on its own, then a blank line, then an optional body wrapped at ~72 chars. Skip the body if a one-line subject is enough.
-            - No trailing period on the subject.
+            - Subject line under 72 chars, no trailing period.
+            - When the change set has multiple distinct concerns, include a body. Separate from the subject by a blank line; wrap body lines at ~72 chars.
+            - Don't enumerate every file by name in the message — the <files-changed> summary already shows them — but DO make sure every distinct concern is reflected somewhere in the message.
             - Return ONLY the commit message text. No preamble like "Here is…", no markdown fences, no commentary, no quotes around it.
 
-            Diff:
+            Full diff:
             $diff
         """.trimIndent()
     }
