@@ -28,6 +28,7 @@
         <li>Markdown rendering with syntax-highlighted code blocks</li>
         <li>Tool-use indicators with colored status signals and diff summaries</li>
         <li><b>File chips</b> — drag/drop, copy/paste, or type a filename to attach files as context; resolves bare filenames against your project</li>
+        <li><b>Image paste</b> — paste a screenshot or any clipboard image; saved to a temp PNG and sent to Claude as a multimodal input on submit</li>
         <li><b>Large-text paste chips</b> — long pastes collapse into a compact chip; double-click to expand back into the input</li>
         <li><b>Smart auto-scroll</b> — follows new output unless you've scrolled up to read; "Jump to latest" button keeps you in control</li>
         <li>Inline diffs: expandable old vs. new for every edit Claude makes, with consolidated stats per file</li>
@@ -67,6 +68,9 @@
     <change-notes><![CDATA[
     <h3>1.0.5</h3>
     <ul>
+        <li><b>Fix-with-Claude intention description added</b> — newer IntelliJ builds require <code>&lt;intentionAction&gt;</code> registrations to ship a <code>description.html</code> plus before/after templates under <code>resources/intentionDescriptions/&lt;ClassName&gt;/</code>. Without them the IDE logged a SEVERE on every load and the intention couldn't appear in the Settings → Editor → Intentions list. Files now included.</li>
+        <li><b>Plugin-load SEVERE fixed</b> — removed an <code>&lt;add-to-group group-id="Floating.CodeToolbar.Web"&gt;</code> registration that referenced a non-existent action group. Logged a SEVERE error in <code>idea.log</code> on every plugin load (the rest of the plugin still worked). The Edit-with-Claude floating-toolbar registration in <code>Floating.CodeToolbar</code> remains and continues to cover JS/TS via the platform's per-language routing in recent IntelliJ versions.</li>
+        <li><b>Paste screenshots into the chat</b> — Cmd+V / Ctrl+V (or drag-drop) on a clipboard image now creates an image chip showing the dimensions. The image is saved to a temp PNG and referenced via the CLI's <code>@&lt;path&gt;</code> syntax on submit, so Claude receives it as a multimodal input. Works for screenshots (macOS Cmd+Shift+Ctrl+4, Windows Win+Shift+S), Preview's Edit→Copy, and browser image right-click→Copy.</li>
         <li><b>Generate Commit Message: reads selected changes from the dialog</b> — previously the action ran <code>git diff --cached</code>, which could be stale relative to what the user had ticked in the commit dialog (forcing a "refresh" click before generation). Now reads <code>VcsDataKeys.SELECTED_CHANGES</code> directly and diffs exactly those file paths against <code>HEAD</code>; falls back to staged-then-unstaged if no selection is available.</li>
         <li><b>Generate Commit Message: better synthesis across multi-file change sets</b> — the prompt now receives a <code>git diff --stat</code> summary alongside the patch, and tells Claude explicitly to find the unifying intent across all files rather than describing the most prominent one.</li>
         <li><b>Deprecated API fix</b> — replaced <code>FileChooserDescriptorFactory.createSingleFileDescriptor()</code> with the equivalent <code>FileChooserDescriptor</code> constructor in the Settings → Browse… button. Flagged by the JetBrains plugin verifier; no behaviour change.</li>
@@ -209,12 +213,13 @@
                     icon="/icons/claude.svg">
                 <keyboard-shortcut keymap="$default" first-keystroke="control alt K"/>
                 <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="alt meta K"/>
-                <!-- Floating code toolbar: the JS/TS plugin defines its own
-                     "Web" variant separate from the generic group, so we
-                     register to both to cover Kotlin/Java + JavaScript/
-                     TypeScript/HTML/CSS/JSON. -->
+                <!-- Floating code toolbar. `Floating.CodeToolbar` is the only
+                     group ID actually registered by the platform; an earlier
+                     attempt to also target `Floating.CodeToolbar.Web` for
+                     JS/TS files produced a SEVERE plugin-load error because
+                     no such group exists. Newer IntelliJ versions route the
+                     JS/TS floating toolbar through this same group. -->
                 <add-to-group group-id="Floating.CodeToolbar" anchor="last"/>
-                <add-to-group group-id="Floating.CodeToolbar.Web" anchor="last"/>
             </action>
 
             <separator/>

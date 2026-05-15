@@ -94,6 +94,7 @@ class WelcomePanel(
                     <li>Claude works in your project directory — it can read, edit, and create files</li>
                     <li>Session history is preserved so Claude remembers context</li>
                     <li>Drag/drop or paste files into the input — they become compact <code>📎</code> chips</li>
+                    <li>Paste screenshots (or any clipboard image) — saved to a temp PNG and sent to Claude as a <code>🖼</code> chip on submit</li>
                     <li>Large pastes collapse into a chip — double-click to expand back into the input</li>
                     <li>Every code block in the chat has <span class='shortcut'>[copy]</span> and <span class='shortcut'>[apply]</span> links</li>
                 </ul>

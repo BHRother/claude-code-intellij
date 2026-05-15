@@ -61,6 +61,7 @@ class PasteAwareInputArea(
     private fun installPasteHandlers() {
         val pasteAction = object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) {
+                LOG.warn("paste-entry: ActionMap pasteAction fired")
                 handleClipboardPaste()
             }
         }
@@ -82,6 +83,7 @@ class PasteAwareInputArea(
         textPane.addKeyListener(object : java.awt.event.KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
                 if (e.keyCode == KeyEvent.VK_V && (e.isMetaDown || e.isControlDown) && !e.isAltDown) {
+                    LOG.warn("paste-entry: KeyListener VK_V (meta=${e.isMetaDown}, ctrl=${e.isControlDown})")
                     e.consume()
                     handleClipboardPaste()
                 }
@@ -100,13 +102,16 @@ class PasteAwareInputArea(
 
             override fun canImport(comp: JComponent?, transferFlavors: Array<out DataFlavor>?): Boolean {
                 return transferFlavors?.any {
-                    it == DataFlavor.stringFlavor || it == DataFlavor.javaFileListFlavor
+                    it == DataFlavor.stringFlavor ||
+                        it == DataFlavor.javaFileListFlavor ||
+                        it == DataFlavor.imageFlavor
                 } ?: false
             }
 
             override fun canImport(support: TransferSupport?): Boolean {
                 return support?.isDataFlavorSupported(DataFlavor.stringFlavor) == true ||
-                    support?.isDataFlavorSupported(DataFlavor.javaFileListFlavor) == true
+                    support?.isDataFlavorSupported(DataFlavor.javaFileListFlavor) == true ||
+                    support?.isDataFlavorSupported(DataFlavor.imageFlavor) == true
             }
 
             override fun getSourceActions(c: JComponent?): Int = COPY_OR_MOVE
@@ -144,7 +149,38 @@ class PasteAwareInputArea(
             }
         }
 
-        // No files anywhere — fall back to text from whichever source has it.
+        // Image data — screenshots (Cmd+Shift+Ctrl+4 on macOS, Win+Shift+S
+        // on Windows), Preview's Edit→Copy, browser image right-click→Copy.
+        // Saved to a temp PNG and inserted as an @<path> chip so the CLI
+        // uploads it as a multimodal block on submit.
+        // On macOS, try osascript first — JBR's clipboard bridge often
+        // misses image flavors that NSPasteboard exposes natively (same
+        // pattern as the file-paste path above).
+        // NOTE: diagnostics below intentionally use WARN, not INFO, because
+        // IntelliJ's default logger config filters INFO out of idea.log.
+        // We want these visible while diagnosing image-paste reliability.
+        LOG.warn("paste: handler entered")
+        val macImage = readClipboardImageViaOsascript()
+        if (macImage != null) {
+            LOG.warn("paste: osascript image -> ${macImage.absolutePath}")
+            insertImageReference(macImage, dimensionsOfFile(macImage))
+            return
+        }
+        for (data in listOfNotNull(ideContents, systemContents)) {
+            val flavors = data.transferDataFlavors?.joinToString(", ") { it.mimeType.substringBefore(';') }
+                ?: "(none)"
+            LOG.warn("paste: flavors=[$flavors]")
+            if (data.isDataFlavorSupported(DataFlavor.imageFlavor)) {
+                LOG.warn("paste: imageFlavor advertised; trying insertImageFromTransferable")
+                if (insertImageFromTransferable(data)) {
+                    LOG.warn("paste: image inserted via transferable")
+                    return
+                }
+                LOG.warn("paste: insertImageFromTransferable returned false")
+            }
+        }
+
+        // No files or images — fall back to text from whichever source has it.
         for (data in listOfNotNull(ideContents, systemContents)) {
             val text = readBestText(data)
             if (!text.isNullOrEmpty()) {
@@ -244,10 +280,19 @@ class PasteAwareInputArea(
     }
 
     private fun importTransferable(data: Transferable?): Boolean {
+        LOG.warn("paste-entry: TransferHandler.importTransferable (data=${data != null})")
         if (data == null) return false
 
-        // 1. Extract any concrete file references from any available flavor.
+        // 1. Image data first — screenshots and image copies should land as
+        // image chips, not as text/file fallbacks. Some sources advertise
+        // BOTH image and file flavors (e.g. dragging an image file from
+        // Finder), and for those we still prefer the file path.
         val files = extractFiles(data)
+        if (files.isEmpty() && data.isDataFlavorSupported(DataFlavor.imageFlavor)) {
+            if (insertImageFromTransferable(data)) return true
+        }
+
+        // 2. Extract any concrete file references from any available flavor.
         if (files.isNotEmpty()) {
             for (file in files) {
                 insertFileReference(file)
@@ -255,7 +300,7 @@ class PasteAwareInputArea(
             return true
         }
 
-        // 2. Fall back to plain text from the most informative text-bearing flavor.
+        // 3. Fall back to plain text from the most informative text-bearing flavor.
         val text = readBestText(data)
         if (text != null) {
             insertSmart(text)
@@ -263,6 +308,127 @@ class PasteAwareInputArea(
         }
 
         return false
+    }
+
+    /**
+     * Reads an image off the clipboard/transferable, writes it to a temp PNG,
+     * and inserts it as an image chip whose underlying content is `@<path>` so
+     * the Claude CLI uploads it as a multimodal block on submit.
+     */
+    private fun insertImageFromTransferable(data: Transferable): Boolean {
+        val image = runCatching { data.getTransferData(DataFlavor.imageFlavor) as? java.awt.Image }
+            .getOrNull() ?: return false
+        val file = saveImageToTempFile(image) ?: return false
+        val w = image.getWidth(null).coerceAtLeast(0)
+        val h = image.getHeight(null).coerceAtLeast(0)
+        insertImageReference(file, if (w > 0 && h > 0) w to h else null)
+        return true
+    }
+
+    /**
+     * macOS-only: read a PNG/TIFF image off NSPasteboard via AppleScript and
+     * write it directly to a temp file. The JBR clipboard bridge often fails
+     * to surface image flavors that NSPasteboard does have — same problem we
+     * saw with file flavors and solved with osascript above.
+     */
+    private fun readClipboardImageViaOsascript(): File? {
+        val osName = System.getProperty("os.name")?.lowercase().orEmpty()
+        if (!osName.contains("mac")) return null
+
+        val tempFile = try {
+            java.nio.file.Files.createTempFile("claude-paste-", ".png").toFile()
+        } catch (e: Exception) {
+            LOG.warn("Could not create temp file for pasted image", e)
+            return null
+        }
+
+        // The AppleScript coerces the clipboard to «class PNGf» and writes
+        // the binary data to disk. If the clipboard has no image (or only a
+        // non-coercible image type), the inner try fails and we get "no".
+        val script = """
+            try
+              set png_data to the clipboard as «class PNGf»
+              set out_file to (open for access POSIX file "${tempFile.absolutePath}" with write permission)
+              set eof of out_file to 0
+              write png_data to out_file
+              close access out_file
+              return "ok"
+            on error errMsg
+              try
+                close access POSIX file "${tempFile.absolutePath}"
+              end try
+              return "no:" & errMsg
+            end try
+        """.trimIndent()
+
+        return try {
+            val proc = ProcessBuilder("/usr/bin/osascript", "-e", script)
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText().trim()
+            val finished = proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                tempFile.delete()
+                LOG.warn("osascript clipboard image read timed out")
+                return null
+            }
+            if (output == "ok" && tempFile.length() > 0) {
+                LOG.warn("osascript clipboard image read: ${tempFile.length()} bytes -> ${tempFile.absolutePath}")
+                tempFile
+            } else {
+                tempFile.delete()
+                LOG.warn("osascript clipboard image read: $output (no image on clipboard)")
+                null
+            }
+        } catch (e: Exception) {
+            tempFile.delete()
+            LOG.warn("osascript clipboard image read failed", e)
+            null
+        }
+    }
+
+    private fun dimensionsOfFile(file: File): Pair<Int, Int>? {
+        return try {
+            val img = javax.imageio.ImageIO.read(file) ?: return null
+            img.width to img.height
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun saveImageToTempFile(image: java.awt.Image): File? {
+        return try {
+            val width = image.getWidth(null)
+            val height = image.getHeight(null)
+            if (width <= 0 || height <= 0) return null
+            val buffered = if (image is java.awt.image.BufferedImage) {
+                image
+            } else {
+                val bi = java.awt.image.BufferedImage(width, height, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+                val g = bi.createGraphics()
+                try {
+                    g.drawImage(image, 0, 0, null)
+                } finally {
+                    g.dispose()
+                }
+                bi
+            }
+            val tempFile = java.nio.file.Files.createTempFile("claude-paste-", ".png").toFile()
+            javax.imageio.ImageIO.write(buffered, "PNG", tempFile)
+            tempFile
+        } catch (e: Exception) {
+            LOG.warn("Failed to save pasted image", e)
+            null
+        }
+    }
+
+    private fun insertImageReference(file: File, dimensions: Pair<Int, Int>?) {
+        val sizeLabel = dimensions?.let { " · ${it.first}×${it.second}" } ?: ""
+        // pasteCounter+1: insertChip itself increments before reading.
+        val label = "🖼 Pasted image #${pasteCounter + 1}$sizeLabel"
+        val content = "@${file.absolutePath}"
+        insertChip(label = label, content = content, tooltip = file.absolutePath, expandable = false)
     }
 
     /**
