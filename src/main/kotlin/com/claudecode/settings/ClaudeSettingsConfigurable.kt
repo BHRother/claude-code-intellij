@@ -2,7 +2,7 @@ package com.claudecode.settings
 
 import com.claudecode.session.ClaudeSession
 import com.intellij.openapi.fileChooser.FileChooser
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
@@ -140,7 +140,12 @@ class ClaudeSettingsConfigurable : Configurable {
 
     private fun browseForClaudePath(field: JTextField?) {
         if (field == null) return
-        val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor()
+        // Constructor args: (chooseFiles, chooseFolders, chooseJars,
+        // chooseJarsAsFiles, chooseJarContents, chooseMultiple).
+        // FileChooserDescriptorFactory.createSingleFileDescriptor() was the
+        // convenience for this same configuration but is deprecated as of
+        // 2024.x; use the constructor directly.
+        val descriptor = FileChooserDescriptor(true, false, false, false, false, false)
             .withTitle("Select the Claude CLI executable")
             .withDescription(
                 "Pick claude (Unix) or claude.cmd (Windows). On Windows you usually find it in " +
