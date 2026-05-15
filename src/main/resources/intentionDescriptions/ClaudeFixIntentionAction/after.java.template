@@ -1,0 +1,3 @@
+List<String> names = users.stream()
+    .map(u -> u.getName())
+    .toList();

@@ -1,3 +1,7 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.TimeZone
+
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "1.9.25"
@@ -5,7 +9,22 @@ plugins {
 }
 
 group = "com.claudecode"
-version = "1.0.5"
+// Version-suffix scheme: every dev build gets a unique timestamp suffix so
+// "Install Plugin from Disk" in IntelliJ never short-circuits on "same
+// version, treat as no-op" — that misbehaviour cost us a couple of debug
+// rounds. Pass `-Prelease` for the canonical release version.
+//   ./gradlew buildPlugin            → claude-code-intellij-1.0.5-dev.YYYYMMDDhhmmss.zip
+//   ./gradlew buildPlugin -Prelease  → claude-code-intellij-1.0.5.zip
+val baseVersion = "1.0.5"
+val isRelease = project.hasProperty("release")
+version = if (isRelease) {
+    baseVersion
+} else {
+    val now = SimpleDateFormat("yyyyMMddHHmmss").apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }.format(Date())
+    "$baseVersion-dev.$now"
+}
 
 repositories {
     mavenCentral()

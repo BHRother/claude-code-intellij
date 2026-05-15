@@ -1,0 +1,19 @@
+<html>
+<body>
+Sends the IDE-detected error or warning at the caret to Claude and offers
+the proposed fix in a side-by-side diff. Works on any inspection produced
+by IntelliJ — compiler errors, linter warnings, code-style issues — across
+all supported languages.
+
+<p>
+The selected line(s) plus the inspection message are sent to the
+<code>claude</code> CLI. The replacement is shown in the standard diff
+viewer; accept to apply, cancel to discard.
+</p>
+
+<p>
+Triggered via <kbd>Alt+Enter</kbd> when the caret is on a highlighted
+problem.
+</p>
+</body>
+</html>
