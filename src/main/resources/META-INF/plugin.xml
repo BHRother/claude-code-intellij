@@ -66,6 +66,7 @@
     <change-notes><![CDATA[
     <h3>1.0.4</h3>
     <ul>
+        <li><b>Edit with Claude in the floating toolbar — now for JS/TS too</b> — the JavaScript/TypeScript plugin uses its own <code>Floating.CodeToolbar.Web</code> group separate from the generic one, so the Claude icon was missing on web files. Action now registers to both groups; the keyboard shortcut was unaffected.</li>
         <li><b>Deprecated API fix</b> — replaced <code>ReadAction.compute(ThrowableComputable)</code> with <code>Application.runReadAction(Computable)</code> in the chat-input filename resolver. Flagged by the JetBrains plugin verifier as deprecated and slated for removal in a future platform release. No behaviour change.</li>
     </ul>
 
@@ -197,7 +198,12 @@
                     icon="/icons/claude.svg">
                 <keyboard-shortcut keymap="$default" first-keystroke="control alt K"/>
                 <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="alt meta K"/>
+                <!-- Floating code toolbar: the JS/TS plugin defines its own
+                     "Web" variant separate from the generic group, so we
+                     register to both to cover Kotlin/Java + JavaScript/
+                     TypeScript/HTML/CSS/JSON. -->
                 <add-to-group group-id="Floating.CodeToolbar" anchor="last"/>
+                <add-to-group group-id="Floating.CodeToolbar.Web" anchor="last"/>
             </action>
 
             <separator/>
