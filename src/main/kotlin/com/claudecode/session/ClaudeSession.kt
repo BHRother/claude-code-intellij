@@ -23,6 +23,7 @@ interface SessionListener {
     fun onTaskProgress(session: ClaudeSession, description: String)
     fun onModelInfo(session: ClaudeSession, model: String)
     fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean)
+    fun onPermissionBlocked(session: ClaudeSession, toolName: String?) {}
     fun onFinished(session: ClaudeSession, costUsd: Double?)
     fun onError(session: ClaudeSession, error: String)
     fun onDebug(session: ClaudeSession, message: String)
@@ -323,6 +324,29 @@ class ClaudeSession(
                     }
                 }
             }
+            // The CLI emits user-type messages with embedded tool_result blocks
+            // — that's where "This command requires approval" arrives when a
+            // tool gets blocked by --permission-mode. We forward errors via
+            // onToolResult and fire onPermissionBlocked for the specific
+            // permission-denial wording so the UI can show its hint *before*
+            // the model produces any natural-language response.
+            "user" -> {
+                val message = json.getAsJsonObject("message") ?: return null
+                val content = message.getAsJsonArray("content") ?: return null
+                for (block in content) {
+                    val obj = block.asJsonObject
+                    if (obj.get("type")?.asString != "tool_result") continue
+                    val toolUseId = obj.get("tool_use_id")?.asString
+                    val isError = obj.get("is_error")?.asBoolean ?: false
+                    val resultContent = obj.get("content")?.asString
+                    if (toolUseId != null) {
+                        listeners.forEach { it.onToolResult(this, toolUseId, isError) }
+                    }
+                    if (isError && resultContent != null && looksLikePermissionDenial(resultContent)) {
+                        listeners.forEach { it.onPermissionBlocked(this, lastToolName) }
+                    }
+                }
+            }
             "result" -> {
                 val sid = json.get("session_id")?.asString
                 if (sid != null) sessionId = sid
@@ -346,6 +370,15 @@ class ClaudeSession(
             }
         }
         return null
+    }
+
+    internal fun looksLikePermissionDenial(toolResultContent: String): Boolean {
+        val lower = toolResultContent.lowercase()
+        return lower.contains("requires approval") ||
+            lower.contains("requires permission") ||
+            lower.contains("permission denied") ||
+            lower.contains("not allowed by the current permission") ||
+            lower.contains("blocked by permission")
     }
 
     internal fun buildDiffSummary(tool: String, input: com.google.gson.JsonObject?): String? {

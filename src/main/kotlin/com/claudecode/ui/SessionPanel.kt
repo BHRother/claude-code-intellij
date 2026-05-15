@@ -735,6 +735,29 @@ class SessionPanel(
         }
     }
 
+    override fun onPermissionBlocked(session: ClaudeSession, toolName: String?) {
+        ApplicationManager.getApplication().invokeLater {
+            // Fire the hint immediately based on the structured tool_result \u2014
+            // don't wait for the model to produce natural-language text. This
+            // is the same UI as maybeShowPermissionHint but triggered earlier
+            // and more reliably.
+            if (permissionHintShown) return@invokeLater
+            permissionHintShown = true
+            val currentMode = ClaudeSettings.getInstance().state.permissionMode
+            val toolLabel = if (!toolName.isNullOrBlank()) " (<code>$toolName</code>)" else ""
+            appendHtml(
+                "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                    "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
+                    "<span style='color: #D9B263;'>\u26a0 A tool$toolLabel was blocked by your current permission mode " +
+                    "(<code>$currentMode</code>).</span><br/>" +
+                    "Open <a href=\"http://localhost/action/open-settings\">Settings</a> and switch to " +
+                    "<b>bypassPermissions</b> to allow shell commands, or keep <b>acceptEdits</b> for file " +
+                    "edits only \u2014 then re-run your request." +
+                    "</div>"
+            )
+        }
+    }
+
     override fun onFinished(session: ClaudeSession, costUsd: Double?) {
         ApplicationManager.getApplication().invokeLater {
             resetEditConsolidation()
@@ -965,11 +988,22 @@ class SessionPanel(
         // The model's wording when a tool fails due to permission. Tuned for
         // false-negative tolerance: the hint is purely informational, so the
         // worst case of a false positive is one extra suggestion.
+        // Phrase list curated from real -p mode responses where the CLI
+        // silently blocked a Bash/Write/Edit call and the model started
+        // asking the user to allow it.
         if (lower.contains("don't have permission") || lower.contains("do not have permission")) return true
         if (lower.contains("permission denied") || lower.contains("permission was denied")) return true
         if (lower.contains("permission to use the") || lower.contains("permission to use this")) return true
+        if (lower.contains("requires approval")) return true
+        if (lower.contains("needs your approval") || lower.contains("need your approval")) return true
+        if (lower.contains("needs to be approved") || lower.contains("need to be approved")) return true
+        if (lower.contains("permission prompt")) return true
+        if (lower.contains("allowlist") || lower.contains("allow list")) return true
+        if (lower.contains("could you allow") || lower.contains("can you allow") ||
+            lower.contains("could you approve") || lower.contains("can you approve")) return true
         if (Regex("\\bapprove\\b.*\\btool\\b").containsMatchIn(lower)) return true
-        if (Regex("\\bblocked\\b.*\\b(tool|permission)\\b").containsMatchIn(lower)) return true
+        if (Regex("\\b(blocked|denied)\\b.*\\b(tool|permission|approval|command)\\b")
+                .containsMatchIn(lower)) return true
         return false
     }
 
