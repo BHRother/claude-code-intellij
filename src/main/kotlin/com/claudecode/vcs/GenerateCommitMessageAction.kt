@@ -85,6 +85,7 @@ class GenerateCommitMessageAction : AnAction() {
         val sep = "<<<COMMIT-SEP>>>"
         val raw = runGit(workingDir, listOf(
             "log", "-n", count.toString(), "--no-merges",
+            "--author=\"$(git config user.name)\"",
             "--pretty=format:%B$sep",
         ))
         if (raw.isBlank()) return ""
