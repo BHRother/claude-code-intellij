@@ -157,8 +157,9 @@ class WelcomePanel(
             <h2>Prerequisites</h2>
             <div class='section'>
                 <ul>
-                    <li>Install the <code>claude</code> CLI: <span class='dim'>npm install -g @anthropic-ai/claude-code</span></li>
+                    <li>Install the <code>claude</code> CLI: <span class='dim'>npm install -g @anthropic-ai/claude-code</span> (works on macOS, Linux, and Windows)</li>
                     <li>Authenticate: run <code>claude</code> in a terminal and follow the prompts</li>
+                    <li>Make sure the CLI is on PATH. On Windows, npm typically installs <code>claude.cmd</code> under <code>%APPDATA%\\npm\\</code></li>
                 </ul>
             </div>
             </body></html>

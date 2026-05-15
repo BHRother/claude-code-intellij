@@ -118,13 +118,15 @@ class ClaudeSession(
         }
         claudeArgs.add(prompt)
 
-        // Wrap with `script` to allocate a pseudo-TTY.
-        // Claude's Node.js process buffers stdout when not connected to a TTY,
-        // which causes the process to hang with no output in ProcessBuilder.
-        val command = if (isMacOS()) {
-            mutableListOf("script", "-q", "/dev/null").apply { addAll(claudeArgs) }
-        } else {
-            mutableListOf("script", "-q", "-c", claudeArgs.joinToString(" ") { shellQuote(it) }, "/dev/null")
+        // On Unix, wrap with `script` to allocate a pseudo-TTY — Claude's Node
+        // process buffers stdout when not connected to a TTY, which makes the
+        // process hang with no output. Windows has no `script` equivalent,
+        // and Node on Windows handles non-TTY pipes correctly for the CLI's
+        // -p stream-json output, so we invoke directly there.
+        val command = when {
+            isWindows() -> claudeArgs.toMutableList()
+            isMacOS() -> mutableListOf("script", "-q", "/dev/null").apply { addAll(claudeArgs) }
+            else -> mutableListOf("script", "-q", "-c", claudeArgs.joinToString(" ") { shellQuote(it) }, "/dev/null")
         }
 
         debug("Command: ${command.joinToString(" ") { shellQuote(it) }}")
@@ -418,6 +420,7 @@ class ClaudeSession(
         private var cachedShellPath: String? = null
 
         fun isMacOS(): Boolean = System.getProperty("os.name").lowercase().contains("mac")
+        fun isWindows(): Boolean = System.getProperty("os.name").lowercase().contains("win")
 
         internal fun shellQuote(s: String): String {
             return "'" + s.replace("'", "'\\''") + "'"
@@ -429,6 +432,15 @@ class ClaudeSession(
 
         private fun resolveShellPath(): String? {
             if (cachedShellPath != null) return cachedShellPath
+
+            // Windows: read PATH straight from the JVM's inherited environment.
+            // There's no "login shell" equivalent and System.getenv is
+            // case-insensitive on Windows (handles PATH/Path/path).
+            if (isWindows()) {
+                cachedShellPath = System.getenv("PATH")
+                return cachedShellPath
+            }
+
             try {
                 val shell = System.getenv("SHELL") ?: com.claudecode.ClaudeConstants.DEFAULT_SHELL
                 val pb = ProcessBuilder(shell, "-l", "-c", "echo \$PATH")
@@ -445,8 +457,33 @@ class ClaudeSession(
         }
 
         private fun resolveClaudePath(configured: String): String {
+            // Absolute paths: pass through unchanged.
             if (configured.startsWith("/")) return configured
+            if (isWindows() && configured.matches(Regex("^[A-Za-z]:[\\\\/].*"))) return configured
             if (cachedResolvedPath != null) return cachedResolvedPath!!
+
+            // Windows: use `where` (built-in) instead of `which`. npm installs
+            // `claude.cmd`, `claude.ps1`, and a Unix-shell `claude` script.
+            // ProcessBuilder needs the .cmd variant to launch successfully
+            // from cmd.exe / PowerShell semantics, so prefer that extension.
+            if (isWindows()) {
+                try {
+                    val pb = ProcessBuilder("where", configured).redirectErrorStream(true)
+                    val proc = pb.start()
+                    val lines = proc.inputStream.bufferedReader().readLines()
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                    val finished = proc.waitFor(5, TimeUnit.SECONDS)
+                    if (finished && proc.exitValue() == 0 && lines.isNotEmpty()) {
+                        val preferred = lines.firstOrNull { it.endsWith(".cmd", true) }
+                            ?: lines.firstOrNull { it.endsWith(".exe", true) }
+                            ?: lines.first()
+                        cachedResolvedPath = preferred
+                        return preferred
+                    }
+                } catch (_: Exception) {}
+                return configured
+            }
 
             try {
                 val shell = System.getenv("SHELL") ?: com.claudecode.ClaudeConstants.DEFAULT_SHELL

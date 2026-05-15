@@ -58,14 +58,16 @@
 
     <h3>Prerequisites</h3>
     <ul>
-        <li>Install the Claude CLI: <code>npm install -g @anthropic-ai/claude-code</code></li>
+        <li>Install the Claude CLI: <code>npm install -g @anthropic-ai/claude-code</code> (works on macOS, Linux, and Windows)</li>
         <li>Authenticate by running <code>claude</code> in a terminal</li>
+        <li>Make sure the CLI is on your PATH so the plugin can spawn it. On Windows, npm typically installs <code>claude.cmd</code> under <code>%APPDATA%\npm\</code> — that directory must be on PATH.</li>
     </ul>
     ]]></description>
 
     <change-notes><![CDATA[
     <h3>1.0.4</h3>
     <ul>
+        <li><b>Windows support</b> — the CLI invocation no longer assumes the Unix <code>script</code> command for pty allocation; on Windows it spawns <code>claude.cmd</code> directly. PATH and executable resolution use <code>where</code> instead of <code>which</code> on Windows, and prefer the <code>.cmd</code> extension over the bare Unix shell-script wrapper that npm also installs. Mac/Linux behaviour is unchanged.</li>
         <li><b>Permission modes (replaces auto-accept toggle)</b> — Settings → Tools → Claude Code now exposes a permission-mode dropdown: <code>acceptEdits</code> (default, file edits go through, shell commands blocked), <code>bypassPermissions</code> (Claude can run any tool), or <code>plan</code> (read-only). Maps directly to the CLI's <code>--permission-mode</code>. The old binary "auto-accept" toggle pretended an interactive permission flow that the CLI's <code>-p</code> mode doesn't actually support; this replaces it with what the CLI really offers.</li>
         <li><b>Permission-blocked hint</b> — when Claude's reply looks like it's been blocked by your current permission mode (e.g. "Could you approve the Write tool…"), an inline hint appears with a clickable link straight to Settings to switch modes.</li>
         <li><b>Edit with Claude in the floating toolbar — now for JS/TS too</b> — the JavaScript/TypeScript plugin uses its own <code>Floating.CodeToolbar.Web</code> group separate from the generic one, so the Claude icon was missing on web files. Action now registers to both groups; the keyboard shortcut was unaffected.</li>
