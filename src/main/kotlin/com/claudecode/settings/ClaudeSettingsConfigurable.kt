@@ -1,9 +1,14 @@
 package com.claudecode.settings
 
+import com.claudecode.session.ClaudeSession
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.DialogPanel
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.dsl.builder.*
 import javax.swing.JComponent
+import javax.swing.JTextField
 
 class ClaudeSettingsConfigurable : Configurable {
 
@@ -13,17 +18,27 @@ class ClaudeSettingsConfigurable : Configurable {
     override fun getDisplayName(): String = com.claudecode.ClaudeConstants.TOOL_WINDOW_ID
 
     override fun createComponent(): JComponent {
+        var pathTextField: JTextField? = null
         panel = panel {
             group("General") {
                 row("Claude CLI path:") {
-                    textField()
+                    val tf = textField()
                         .bindText(settings.state::claudePath)
                         .columns(COLUMNS_LARGE)
-                        .comment(
-                            "Bare name (resolved via PATH / npm) or an absolute path. " +
-                                "On Windows, set the absolute path to <code>claude.cmd</code> " +
-                                "(usually <code>%APPDATA%\\npm\\claude.cmd</code>) if auto-detection fails."
-                        )
+                    pathTextField = tf.component
+                    button("Auto-detect") {
+                        autoDetectClaudePath(pathTextField)
+                    }
+                    button("Browse…") {
+                        browseForClaudePath(pathTextField)
+                    }
+                }
+                row("") {
+                    comment(
+                        "Bare name (resolved via PATH / npm) or an absolute path. " +
+                            "On Windows, set the absolute path to <code>claude.cmd</code> " +
+                            "(usually <code>%APPDATA%\\npm\\claude.cmd</code>) if auto-detection fails."
+                    )
                 }
                 row("Model:") {
                     val allModels = settings.getAllModels()
@@ -95,5 +110,44 @@ class ClaudeSettingsConfigurable : Configurable {
 
     override fun disposeUIResources() {
         panel = null
+    }
+
+    private fun autoDetectClaudePath(field: JTextField?) {
+        if (field == null) return
+        ClaudeSession.clearResolutionCache()
+        val configured = field.text.ifBlank { com.claudecode.ClaudeConstants.DEFAULT_CLI_PATH }
+        val result = ClaudeSession.resolveClaudePathDiagnosed(configured)
+
+        val traceText = if (result.trace.isEmpty()) "(no diagnostics)"
+            else result.trace.joinToString("\n") { "• $it" }
+
+        if (result.resolved) {
+            field.text = result.resolvedPath
+            Messages.showInfoMessage(
+                "Found: ${result.resolvedPath}\n\nDiagnostic trace:\n$traceText",
+                "Claude CLI Auto-Detect"
+            )
+        } else {
+            Messages.showWarningDialog(
+                "Could not auto-detect the Claude CLI.\n\n" +
+                    "Diagnostic trace:\n$traceText\n\n" +
+                    "Use Browse… to pick the executable manually. " +
+                    "On Windows it's typically %APPDATA%\\npm\\claude.cmd.",
+                "Claude CLI Auto-Detect"
+            )
+        }
+    }
+
+    private fun browseForClaudePath(field: JTextField?) {
+        if (field == null) return
+        val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor()
+            .withTitle("Select the Claude CLI executable")
+            .withDescription(
+                "Pick claude (Unix) or claude.cmd (Windows). On Windows you usually find it in " +
+                    "%APPDATA%\\npm\\."
+            )
+        val picked = FileChooser.chooseFile(descriptor, null, null) ?: return
+        field.text = picked.path
+        ClaudeSession.clearResolutionCache()
     }
 }

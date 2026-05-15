@@ -88,8 +88,13 @@ class ClaudeSession(
 
     private fun runClaudeCommand(prompt: String) {
         val settings = ClaudeSettings.getInstance().state
-        val claudePath = resolveClaudePath(settings.claudePath)
+        // Empty/blank persisted state should fall back to the default name,
+        // not produce ProcessBuilder("") which fails with CreateProcess error=87.
+        val configuredPath = settings.claudePath.ifBlank { com.claudecode.ClaudeConstants.DEFAULT_CLI_PATH }
+        val resolution = resolveClaudePathDiagnosed(configuredPath)
+        val claudePath = resolution.resolvedPath
 
+        resolution.trace.forEach { debug("path-resolution: $it") }
         debug("Resolved claude path: $claudePath")
         debug("Working directory: $workingDirectory")
 
@@ -432,6 +437,27 @@ class ClaudeSession(
 
         fun resolveClaudePathPublic(configured: String): String = resolveClaudePath(configured)
 
+        /**
+         * Same resolution as [resolveClaudePathPublic] but also returns a
+         * trace of every strategy attempted. Settings UI uses this to show
+         * the user exactly what was tried; runClaudeCommand pipes the trace
+         * through to the chat debug log so failures are diagnosable without
+         * digging through idea.log.
+         */
+        data class CliResolution(val resolvedPath: String, val resolved: Boolean, val trace: List<String>)
+
+        fun resolveClaudePathDiagnosed(configured: String): CliResolution {
+            val trace = mutableListOf<String>()
+            val resolved = resolveClaudePathInternal(configured, trace)
+            val didFind = resolved != configured ||
+                File(configured).isAbsolute && File(configured).isFile
+            return CliResolution(resolved, didFind, trace)
+        }
+
+        fun clearResolutionCache() {
+            cachedResolvedPath = null
+        }
+
         private fun resolveShellPath(): String? {
             if (cachedShellPath != null) return cachedShellPath
 
@@ -458,21 +484,35 @@ class ClaudeSession(
             return null
         }
 
-        private fun resolveClaudePath(configured: String): String {
+        private fun resolveClaudePath(configured: String): String =
+            resolveClaudePathInternal(configured, mutableListOf())
+
+        private fun resolveClaudePathInternal(configured: String, trace: MutableList<String>): String {
             // Absolute paths: pass through unchanged.
-            if (configured.startsWith("/")) return configured
-            if (isWindows() && configured.matches(Regex("^[A-Za-z]:[\\\\/].*"))) return configured
-            if (cachedResolvedPath != null) return cachedResolvedPath!!
+            if (configured.startsWith("/")) {
+                trace.add("Absolute Unix path; using as-is: $configured")
+                return configured
+            }
+            if (isWindows() && configured.matches(Regex("^[A-Za-z]:[\\\\/].*"))) {
+                trace.add("Absolute Windows path; using as-is: $configured")
+                return configured
+            }
+            if (cachedResolvedPath != null) {
+                trace.add("Cached resolution: ${cachedResolvedPath!!}")
+                return cachedResolvedPath!!
+            }
 
             if (isWindows()) {
-                resolveOnWindows(configured)?.let {
+                resolveOnWindows(configured, trace)?.let {
                     cachedResolvedPath = it
                     return it
                 }
-                staticLog.warn("Could not resolve '$configured' on Windows via where, " +
+                val msg = "Could not resolve '$configured' on Windows via where, " +
                     "common npm locations, or `npm config get prefix`. " +
-                    "Falling back to bare name; ProcessBuilder will likely fail. " +
-                    "Set an absolute path in Settings → Tools → Claude Code → Claude CLI path.")
+                    "Set an absolute path in Settings → Tools → Claude Code → Claude CLI path " +
+                    "(usually %APPDATA%\\npm\\claude.cmd)."
+                trace.add(msg)
+                staticLog.warn(msg)
                 return configured
             }
 
@@ -506,7 +546,12 @@ class ClaudeSession(
          *      Node's installer puts npm.cmd in C:\Program Files\nodejs\, a
          *      system-PATH location).
          */
-        private fun resolveOnWindows(configured: String): String? {
+        private fun resolveOnWindows(configured: String, trace: MutableList<String>): String? {
+            fun trace(line: String) {
+                trace.add(line)
+                staticLog.info("resolveOnWindows: $line")
+            }
+
             // 1. `where`
             try {
                 val pb = ProcessBuilder("where", configured).redirectErrorStream(true)
@@ -517,13 +562,13 @@ class ClaudeSession(
                 val finished = proc.waitFor(5, TimeUnit.SECONDS)
                 if (finished && proc.exitValue() == 0 && lines.isNotEmpty()) {
                     val preferred = pickWindowsCandidate(lines)
-                    staticLog.info("resolveOnWindows: `where $configured` -> $preferred")
+                    trace("`where $configured` -> $preferred")
                     return preferred
                 }
-                staticLog.info("resolveOnWindows: `where $configured` returned no matches " +
+                trace("`where $configured` returned no matches " +
                     "(exit=${if (finished) proc.exitValue() else "timeout"})")
             } catch (e: Exception) {
-                staticLog.info("resolveOnWindows: `where` failed: ${e.message}")
+                trace("`where` failed: ${e.message}")
             }
 
             // 2. Direct probes of common npm install dirs
@@ -533,16 +578,20 @@ class ClaudeSession(
                 System.getenv("LOCALAPPDATA")?.let { "$it\\npm" },
                 System.getenv("ProgramFiles")?.let { "$it\\nodejs" },
                 System.getenv("ProgramFiles(x86)")?.let { "$it\\nodejs" },
-            )
+                System.getenv("USERPROFILE")?.let { "$it\\AppData\\Roaming\\npm" },
+                System.getenv("USERPROFILE")?.let { "$it\\AppData\\Local\\npm" },
+            ).distinct()
+            trace("Probing ${dirCandidates.size} directories: ${dirCandidates.joinToString(", ")}")
             for (dir in dirCandidates) {
                 for (name in nameCandidates) {
                     val candidate = "$dir\\$name"
                     if (File(candidate).isFile) {
-                        staticLog.info("resolveOnWindows: probed candidate exists: $candidate")
+                        trace("Probe hit: $candidate")
                         return candidate
                     }
                 }
             }
+            trace("No probe directory contained $configured.cmd/.exe/bare")
 
             // 3. Ask npm for its global prefix
             try {
@@ -553,21 +602,89 @@ class ClaudeSession(
                 if (finished && proc.exitValue() == 0 && output.isNotBlank()) {
                     val prefix = output.lines().firstOrNull { it.isNotBlank() }?.trim() ?: ""
                     if (prefix.isNotBlank()) {
+                        trace("`npm config get prefix` -> $prefix")
                         for (name in nameCandidates) {
                             val candidate = "$prefix\\$name"
                             if (File(candidate).isFile) {
-                                staticLog.info("resolveOnWindows: npm prefix '$prefix' -> $candidate")
+                                trace("npm-prefix probe hit: $candidate")
                                 return candidate
                             }
                         }
-                        staticLog.info("resolveOnWindows: npm prefix '$prefix' has no $configured.cmd/exe/bare")
+                        trace("npm prefix '$prefix' has no $configured.cmd/.exe/bare")
+                    } else {
+                        trace("`npm config get prefix` returned blank")
                     }
+                } else {
+                    trace("`npm config get prefix` failed (exit=${if (finished) proc.exitValue() else "timeout"})")
                 }
             } catch (e: Exception) {
-                staticLog.info("resolveOnWindows: `npm config get prefix` failed: ${e.message}")
+                trace("`npm config get prefix` failed: ${e.message}")
+            }
+
+            // 4. Read the user PATH from the Windows registry. This is the PATH
+            // cmd.exe / PowerShell get at login but the JVM may not have
+            // inherited (e.g. if IntelliJ was launched before the user PATH
+            // was last modified, or via a launcher that scrubs env). reg.exe
+            // lives in C:\Windows\System32 which is on system PATH, so this
+            // works even when the rest of PATH is degraded.
+            val registryPaths = readUserPathFromRegistry(trace)
+            for (dir in registryPaths) {
+                for (name in nameCandidates) {
+                    val candidate = "$dir\\$name"
+                    if (File(candidate).isFile) {
+                        trace("Registry-PATH probe hit: $candidate")
+                        return candidate
+                    }
+                }
             }
 
             return null
+        }
+
+        private fun readUserPathFromRegistry(traceList: MutableList<String>): List<String> {
+            fun log(line: String) {
+                traceList.add(line)
+                staticLog.info("resolveOnWindows: $line")
+            }
+            return try {
+                val pb = ProcessBuilder("reg", "query", "HKCU\\Environment", "/v", "Path")
+                    .redirectErrorStream(true)
+                val proc = pb.start()
+                val output = proc.inputStream.bufferedReader().readText()
+                val finished = proc.waitFor(5, TimeUnit.SECONDS)
+                if (!finished || proc.exitValue() != 0) {
+                    log("`reg query HKCU\\Environment Path` failed " +
+                        "(exit=${if (finished) proc.exitValue() else "timeout"})")
+                    return emptyList()
+                }
+                // Output looks like:
+                //   HKEY_CURRENT_USER\Environment
+                //       Path    REG_EXPAND_SZ    C:\Foo;C:\Bar;%APPDATA%\npm
+                val pathLine = output.lines().firstOrNull {
+                    it.trim().startsWith("Path", ignoreCase = true)
+                }
+                if (pathLine == null) {
+                    log("`reg query` output had no Path line")
+                    return emptyList()
+                }
+                val pathValue = pathLine.substringAfter("REG_").substringAfter("    ").trim()
+                val expanded = expandWindowsEnvVars(pathValue)
+                val parts = expanded.split(";").map { it.trim() }.filter { it.isNotBlank() }
+                log("Registry HKCU Path -> ${parts.size} entries")
+                parts
+            } catch (e: Exception) {
+                log("`reg query` failed: ${e.message}")
+                emptyList()
+            }
+        }
+
+        private fun expandWindowsEnvVars(input: String): String {
+            // Replace %FOO% with the JVM's view of the env var. Anything we
+            // can't resolve we leave as-is so the directory simply won't exist
+            // and gets skipped by the File.isFile check upstream.
+            return Regex("%([^%]+)%").replace(input) { match ->
+                System.getenv(match.groupValues[1]) ?: match.value
+            }
         }
 
         private fun pickWindowsCandidate(lines: List<String>): String =

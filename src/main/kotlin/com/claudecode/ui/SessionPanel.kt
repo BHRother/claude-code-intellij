@@ -754,8 +754,33 @@ class SessionPanel(
         ApplicationManager.getApplication().invokeLater {
             resetEditConsolidation()
             appendHtml("<div class='error-msg'>${escapeHtml(error)}</div>")
+            if (looksLikeClaudeNotFound(error)) {
+                showCliNotFoundHint()
+            }
             setBusyState(false)
         }
+    }
+
+    private fun looksLikeClaudeNotFound(error: String): Boolean {
+        val lower = error.lowercase()
+        // ProcessBuilder on Windows: "Cannot run program \"claude\" ... CreateProcess error=2"
+        // ProcessBuilder on Unix: "Cannot run program \"claude\" ... No such file or directory"
+        if (!lower.contains("cannot run program")) return false
+        return lower.contains("claude") || lower.contains("createprocess error=2") ||
+            lower.contains("no such file")
+    }
+
+    private fun showCliNotFoundHint() {
+        appendHtml(
+            "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
+                "<span style='color: #D9B263;'>⚠ The Claude CLI couldn't be found.</span><br/>" +
+                "Open <a href=\"http://localhost/action/open-settings\">Settings</a> and click " +
+                "<b>Auto-detect</b> next to the CLI path field, or use <b>Browse…</b> to pick the executable. " +
+                "On Windows it's usually <code>%APPDATA%\\npm\\claude.cmd</code>; on macOS/Linux check that " +
+                "<code>claude</code> is on PATH or set the absolute path." +
+                "</div>"
+        )
     }
 
     override fun onDebug(session: ClaudeSession, message: String) {
