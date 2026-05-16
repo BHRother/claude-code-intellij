@@ -28,6 +28,17 @@ class PasteAwareInputArea(
     // (chip components, file refs, programmatic text setters).
     private var isProgrammaticInsert = false
 
+    // Timestamp of the most recent chip we created from our paste handler
+    // (GlobalDispatcher → handleClipboardPaste → insertChip). Used by the
+    // DocumentFilter to suppress duplicate large-text inserts produced by
+    // IntelliJ's $Paste action racing with our handler: clipboards with
+    // both stringFlavor (plain) and HTML flavors get pasted twice — once
+    // by our handler reading stringFlavor, once by the IDE inserting the
+    // HTML representation (flattened to text) into the document. The
+    // second insert lands within milliseconds of the first; if it's large
+    // enough to chip, this guard drops it.
+    @Volatile private var recentlyChippedAt: Long = 0L
+
     init {
         isOpaque = false
 
@@ -770,8 +781,24 @@ class PasteAwareInputArea(
             }
         }
 
-        // 3. Big paste → text chip.
-        if (text.length >= CHIP_CHAR_THRESHOLD || lines.size > CHIP_LINE_THRESHOLD) {
+        // 3. Big paste → text chip. BUT first: if our handler-driven paste
+        // just created a chip within the last 250ms, this large insert is
+        // almost certainly the IDE's $Paste action racing with our
+        // GlobalDispatcher — same logical paste, different clipboard flavor
+        // (e.g. plain-text via our handler, HTML-flattened-to-text via the
+        // IDE). Drop it to avoid the double-chip bug. The user-visible chip
+        // is the one our handler already produced.
+        val isLargePaste = text.length >= CHIP_CHAR_THRESHOLD || lines.size > CHIP_LINE_THRESHOLD
+        if (isLargePaste &&
+            (System.currentTimeMillis() - recentlyChippedAt) < DUPE_SUPPRESS_WINDOW_MS
+        ) {
+            LOG.info("paste: suppressed duplicate large insert (len=${text.length}, " +
+                "lines=${lines.size}) — racing \$Paste action after our chip")
+            if (length > 0) fb.replace(offset, length, "", attrs)
+            return
+        }
+
+        if (isLargePaste) {
             if (length > 0) fb.replace(offset, length, "", attrs)
             insertTextChipViaBypass(fb, offset, text, lines.size)
             return
@@ -1026,6 +1053,7 @@ class PasteAwareInputArea(
      */
     private fun insertChip(label: String, content: String, tooltip: String?, expandable: Boolean = false) {
         pasteCounter++
+        recentlyChippedAt = System.currentTimeMillis()
         val chip = createChip(label, content, tooltip, expandable = expandable)
         val style = textPane.addStyle("chip-$pasteCounter", null)
         StyleConstants.setComponent(style, chip)
@@ -1257,6 +1285,12 @@ class PasteAwareInputArea(
         private val LOG = Logger.getInstance(PasteAwareInputArea::class.java)
         private const val CHIP_CHAR_THRESHOLD = 250
         private const val CHIP_LINE_THRESHOLD = 3
+        // Window during which a large insert through the DocumentFilter is
+        // assumed to be the IDE's $Paste action racing with our handler.
+        // 250ms is comfortable headroom — the racing insert typically lands
+        // within 1-50ms — without being so long that a real user-initiated
+        // large paste right after a chip would get swallowed.
+        private const val DUPE_SUPPRESS_WINDOW_MS = 250L
         // Probed in order. Languages first, then markup/data, then scripts/config.
         private val COMMON_FILE_EXTENSIONS = listOf(
             "kt", "kts", "java", "py", "ts", "tsx", "js", "jsx",
