@@ -7,7 +7,9 @@ import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.dsl.builder.*
+import javax.swing.DefaultListCellRenderer
 import javax.swing.JComponent
+import javax.swing.JList
 import javax.swing.JTextField
 
 class ClaudeSettingsConfigurable : Configurable {
@@ -42,7 +44,7 @@ class ClaudeSettingsConfigurable : Configurable {
                 }
                 row("Model:") {
                     val allModels = settings.getAllModels()
-                    comboBox(allModels)
+                    comboBox(allModels, friendlyModelRenderer())
                         .bindItem(
                             { settings.state.model },
                             { settings.state.model = it ?: "" }
@@ -56,7 +58,7 @@ class ClaudeSettingsConfigurable : Configurable {
                                 null
                             }
                         }
-                        .comment("Leave empty for CLI default. You can type any model ID.")
+                        .comment("Leave empty for CLI default. Type any model ID — known IDs display as short names (Opus 4.7, etc.).")
                 }
                 row("Font size:") {
                     spinner(8..32)
@@ -71,17 +73,18 @@ class ClaudeSettingsConfigurable : Configurable {
             group("Permissions") {
                 row("Permission mode:") {
                     val modes = com.claudecode.ClaudeConstants.PERMISSION_MODES
-                    comboBox(modes)
+                    comboBox(modes, friendlyPermissionRenderer())
                         .bindItem(
                             { settings.state.permissionMode.takeIf { it in modes }
                                 ?: com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS },
                             { settings.state.permissionMode = it ?: com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS }
                         )
                         .comment(
-                            "<b>acceptEdits</b> (recommended): file edits go through, shell commands are blocked.<br/>" +
-                                "<b>bypassPermissions</b>: Claude can run any tool including shell commands.<br/>" +
-                                "<b>plan</b>: read-only — Read/Grep/Glob only, useful for exploratory chats.<br/>" +
-                                "Maps to the CLI's <code>--permission-mode</code> flag."
+                            "<b>Plan</b>: read-only — Read/Grep/Glob only, useful for exploratory chats.<br/>" +
+                                "<b>Content Only</b> (recommended): file writes/edits go through, shell commands are blocked.<br/>" +
+                                "<b>Unrestricted</b>: Claude can run any tool including shell commands.<br/>" +
+                                "Maps to the CLI's <code>--permission-mode</code> flag " +
+                                "(<code>plan</code> / <code>acceptEdits</code> / <code>bypassPermissions</code>)."
                         )
                 }
             }
@@ -135,6 +138,28 @@ class ClaudeSettingsConfigurable : Configurable {
                     "On Windows it's typically %APPDATA%\\npm\\claude.cmd.",
                 "Claude CLI Auto-Detect"
             )
+        }
+    }
+
+    private fun friendlyModelRenderer(): DefaultListCellRenderer = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?, value: Any?, index: Int,
+            isSelected: Boolean, cellHasFocus: Boolean
+        ): java.awt.Component {
+            val raw = value?.toString() ?: ""
+            val label = com.claudecode.ClaudeConstants.shortModelLabel(raw)
+            return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
+        }
+    }
+
+    private fun friendlyPermissionRenderer(): DefaultListCellRenderer = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?, value: Any?, index: Int,
+            isSelected: Boolean, cellHasFocus: Boolean
+        ): java.awt.Component {
+            val raw = value?.toString() ?: ""
+            val label = com.claudecode.ClaudeConstants.shortPermissionModeLabel(raw)
+            return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
         }
     }
 

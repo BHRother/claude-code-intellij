@@ -23,7 +23,14 @@ interface SessionListener {
     fun onTaskProgress(session: ClaudeSession, description: String)
     fun onModelInfo(session: ClaudeSession, model: String)
     fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean)
-    fun onPermissionBlocked(session: ClaudeSession, toolName: String?) {}
+    /**
+     * Fired when a tool call was denied by the active --permission-mode.
+     * [toolInputDetail] is the most relevant single input field for the tool:
+     * the bash command for Bash, the file_path for Edit/Write/Read, etc.
+     * Used by the UI to offer a "grant exactly this" affordance via
+     * `.claude/settings.local.json`.
+     */
+    fun onPermissionBlocked(session: ClaudeSession, toolName: String?, toolInputDetail: String?) {}
     fun onFinished(session: ClaudeSession, costUsd: Double?)
     fun onError(session: ClaudeSession, error: String)
     fun onDebug(session: ClaudeSession, message: String)
@@ -45,10 +52,19 @@ class ClaudeSession(
     private val readFiles = mutableSetOf<String>()
     private var lastToolUseId: String? = null
     private var lastToolName: String? = null
+    // Per-tool: the input field most useful as a permission-pattern argument
+    // (bash command, file_path, etc.). See onPermissionBlocked.
+    private var lastToolInputDetail: String? = null
 
     @Volatile
     var isBusy = false
         private set
+
+    // Per-session overrides set from the chip row in SessionPanel.
+    // null → fall back to ClaudeSettings (global default). Changes apply on
+    // the next message — they don't affect a request that's already in flight.
+    @Volatile var modelOverride: String? = null
+    @Volatile var permissionModeOverride: String? = null
 
     fun addListener(listener: SessionListener) {
         listeners.add(listener)
@@ -105,7 +121,8 @@ class ClaudeSession(
             "--output-format", "stream-json",
             "--verbose"
         )
-        val model = settings.model
+        // Chip-row override (per-session) takes precedence over global settings.
+        val model = (modelOverride ?: settings.model)
         if (model.isNotBlank()) {
             claudeArgs.add("--model")
             claudeArgs.add(model)
@@ -115,7 +132,8 @@ class ClaudeSession(
         // prompt, so the user picks one of the modes that fits their tolerance
         // (acceptEdits / bypassPermissions / plan) instead of an unreachable
         // "ask each time" flow.
-        val permMode = settings.permissionMode.ifBlank { com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS }
+        val permMode = (permissionModeOverride ?: settings.permissionMode)
+            .ifBlank { com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS }
         claudeArgs.add("--permission-mode")
         claudeArgs.add(permMode)
         if (sessionId != null) {
@@ -154,6 +172,11 @@ class ClaudeSession(
         debug("Process started (pid=${process?.pid()})")
 
         val responseText = StringBuilder()
+        // Non-json lines from the CLI/pty wrapper — usually debug noise, BUT
+        // when claude itself fails (bad flag, unknown model) it prints the
+        // error here. We keep them so the error path can surface a useful
+        // message instead of just "exited with code 1".
+        val nonJsonOutput = StringBuilder()
         var costUsd: Double? = null
 
         // With redirectErrorStream(true) + script, everything comes on stdout
@@ -180,6 +203,10 @@ class ClaudeSession(
                     // --permission-mode flag.)
                     if (!cleaned.startsWith("{")) {
                         debug("non-json[$lineNum]: ${cleaned.take(200)}")
+                        if (nonJsonOutput.length < 2000) {
+                            if (nonJsonOutput.isNotEmpty()) nonJsonOutput.append('\n')
+                            nonJsonOutput.append(cleaned)
+                        }
                         return@forEachLine
                     }
 
@@ -203,7 +230,13 @@ class ClaudeSession(
             debug("Process exited: finished=$finished code=$code")
 
             if ((code != null && code != 0) && responseText.isEmpty()) {
-                listeners.forEach { it.onError(this, "Claude exited with code $code") }
+                val detail = extractClaudeErrorDetail(nonJsonOutput.toString())
+                val msg = if (detail.isNullOrBlank()) {
+                    "Claude exited with code $code"
+                } else {
+                    "Claude exited with code $code — $detail"
+                }
+                listeners.forEach { it.onError(this, msg) }
             }
         } catch (e: Exception) {
             debug("waitFor error: ${e.message}")
@@ -279,6 +312,14 @@ class ClaudeSession(
                                 lastToolUseId = toolUseId
                                 lastToolName = toolName
                             }
+                            // Snapshot the input field most useful as a
+                            // permission-allow pattern arg for this tool.
+                            lastToolInputDetail = when (toolName) {
+                                "Bash" -> input?.get("command")?.asString
+                                "Edit", "Write", "Read", "NotebookEdit" -> input?.get("file_path")?.asString
+                                "WebFetch" -> input?.get("url")?.asString
+                                else -> null
+                            }
                             val filePath = input?.get("file_path")?.asString
                             val diffData = if (toolName == "Edit") {
                                 val oldStr = input?.get("old_string")?.asString
@@ -343,7 +384,7 @@ class ClaudeSession(
                         listeners.forEach { it.onToolResult(this, toolUseId, isError) }
                     }
                     if (isError && resultContent != null && looksLikePermissionDenial(resultContent)) {
-                        listeners.forEach { it.onPermissionBlocked(this, lastToolName) }
+                        listeners.forEach { it.onPermissionBlocked(this, lastToolName, lastToolInputDetail) }
                     }
                 }
             }
@@ -370,6 +411,31 @@ class ClaudeSession(
             }
         }
         return null
+    }
+
+    /**
+     * Sift non-json CLI output for something humans should see. Most lines are
+     * pty noise; we want the first one that looks like an actual error/help
+     * message from the `claude` binary itself.
+     */
+    internal fun extractClaudeErrorDetail(raw: String): String? {
+        if (raw.isBlank()) return null
+        // Match commander.js / yargs-style error lines (`error: ...`,
+        // `Error:`, `unknown option`, `missing argument`) and the model-not-
+        // available message Claude returns in -p mode.
+        val errorPattern = Regex(
+            "(?i)^(error:|err:|fatal:|warning:|unknown |missing |option |there's an issue|invalid )"
+        )
+        val candidates = raw.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            // Drop pty/script preambles like "Script started" / "Script done".
+            .filterNot { it.startsWith("Script ", ignoreCase = true) }
+            .toList()
+        val first = candidates.firstOrNull { errorPattern.containsMatchIn(it) }
+            ?: candidates.firstOrNull()
+            ?: return null
+        return first.take(300)
     }
 
     internal fun looksLikePermissionDenial(toolResultContent: String): Boolean {

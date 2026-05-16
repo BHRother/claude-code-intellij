@@ -29,23 +29,32 @@ class SessionPanel(
     private lateinit var outputScrollPane: JBScrollPane
     private lateinit var jumpToBottomButton: JButton
     private lateinit var inputArea: PasteAwareInputArea
-    private val sendStopButton: JButton
+    private val sendStopButton: AccentButton
     private val statusLabel: JLabel
-    private val modelLabel: JLabel
     private val thinkingLabel: JLabel
     private val debugArea: JTextArea
     private val debugToggle: JCheckBox
+    private lateinit var modelChip: ChipDropdown
+    private lateinit var permissionChip: ChipDropdown
+    /** Mirrors the model the user has selected in the chip — used to detect divergence. */
+    private var selectedModelForDivergenceCheck: String = ""
+    /** Throttle: only warn about a given (selected, actual) pair once per session. */
+    private val warnedModelPairs = mutableSetOf<Pair<String, String>>()
+    /** One-shot: first time the user changes any chip in this session, drop a hint that it's session-local. */
+    private var chipScopeHintShown = false
     private var thinkingTimer: Timer? = null
     private var dotCount = 0
     private var thinkingStartTime = 0L
     private var thinkingContent: String? = null
     private var activeToolName: String? = null
     private var hasAutoNamed = false
-    private var lastCtrlCTime = 0L
-    private var ctrlCDispatcher: java.awt.KeyEventDispatcher? = null
     private val changedFiles = mutableListOf<Pair<String, String>>() // (filePath, action)
     private val copyableCommands = mutableMapOf<String, String>()
     private val applyableCode = mutableMapOf<String, Pair<String, String>>() // key -> (code, lang)
+    // Pending permission-grant offers keyed by the action URL token. Stores
+    // (toolName, toolInputDetail) so the click handler knows what to allow.
+    private val pendingGrants = mutableMapOf<String, Pair<String, String?>>()
+    private var grantCounter = 0
     private val pendingDiffs = mutableMapOf<String, String>() // diffId -> diff HTML
     private val expandedDiffs = mutableSetOf<String>()
     private var copyCommandCounter = 0
@@ -67,16 +76,6 @@ class SessionPanel(
         val settings = ClaudeSettings.getInstance().state
         val monoFont = Font(com.claudecode.ClaudeConstants.FONT_FAMILY, Font.PLAIN, settings.fontSize)
         val smallFont = monoFont.deriveFont(11f)
-
-        // Model info bar at top
-        val configuredModel = settings.model.ifBlank { "default (send a message to detect)" }
-        modelLabel = JLabel("Model: $configuredModel").apply {
-            font = monoFont.deriveFont(11f)
-            foreground = JBColor(Color(0xD9, 0x77, 0x57), Color(0xD9, 0x77, 0x57))
-            border = JBUI.Borders.empty(4, 8)
-            background = JBColor(Color(0x2B, 0x2D, 0x30), Color(0x2B, 0x2D, 0x30))
-            isOpaque = true
-        }
 
         outputPane = JTextPane().apply {
             isEditable = false
@@ -166,6 +165,18 @@ class SessionPanel(
                         }
                         href.contains("/action/open-settings") -> {
                             openClaudeSettings()
+                        }
+                        href.contains("/action/grant-specific/") -> {
+                            val key = href.substringAfter("/action/grant-specific/")
+                            pendingGrants[key]?.let { applyGrant(key, broad = false) }
+                        }
+                        href.contains("/action/grant-broad/") -> {
+                            val key = href.substringAfter("/action/grant-broad/")
+                            pendingGrants[key]?.let { applyGrant(key, broad = true) }
+                        }
+                        href.contains("/action/grant-unrestricted/") -> {
+                            val key = href.substringAfter("/action/grant-unrestricted/")
+                            pendingGrants[key]?.let { switchToUnrestricted(key) }
                         }
                         href.contains("/action/inline-diff/") -> {
                             val diffId = href.substringAfter("/action/inline-diff/")
@@ -279,35 +290,29 @@ class SessionPanel(
             }
         })
 
-        // Ctrl+C / Cmd+C double-tap to stop (within 500ms)
-        // Uses KeyEventPostProcessor to run AFTER IntelliJ's copy action
-        ctrlCDispatcher = java.awt.KeyEventDispatcher { e ->
-            if (e.id == KeyEvent.KEY_PRESSED && e.keyCode == KeyEvent.VK_C &&
-                (e.isControlDown || e.isMetaDown)
-            ) {
-                // Only handle if this panel is showing
-                if (!this@SessionPanel.isShowing) return@KeyEventDispatcher false
-                val now = System.currentTimeMillis()
-                if (now - lastCtrlCTime < 500 && session.isBusy) {
-                    SwingUtilities.invokeLater {
-                        session.stop()
-                        appendHtml("<div class='system-msg'>Stopped by Ctrl+C.</div>")
-                        setBusyState(false)
-                    }
-                    lastCtrlCTime = 0L
-                    return@KeyEventDispatcher true
-                }
-                lastCtrlCTime = now
-            }
-            false
-        }
-        KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(ctrlCDispatcher)
-
         inputArea.border = JBUI.Borders.customLine(JBColor(0x3C3F41, 0x3C3F41), 1, 0, 0, 0)
-        inputArea.minimumSize = Dimension(0, 60)
-        inputArea.preferredSize = Dimension(0, 100)
+        // Cursor-style auto-grow: starts at 3 lines, expands per line up to
+        // 10, then scrolls. Reset to 3 happens automatically on clear() because
+        // the document listener fires on text removal too.
+        inputArea.enableAutoGrow(minLines = 3, maxLines = 10)
+        // Keep the chat output pinned to the bottom across input-area resizes.
+        // Without this, growing the input shifts the chat viewport upward,
+        // making "Jump to latest" flicker on even though the user hasn't moved.
+        inputArea.onBeforeAutoGrow = {
+            val wasAtBottom = isOutputAtBottom()
+            if (wasAtBottom) {
+                // Two-step defer: revalidate is queued on the EDT, layout
+                // happens on the *next* paint cycle, and only then can we
+                // read the new scroll maximum. invokeLater→invokeLater puts
+                // us safely after both.
+                SwingUtilities.invokeLater {
+                    SwingUtilities.invokeLater { scrollOutputToBottom() }
+                }
+            }
+        }
 
-        sendStopButton = JButton("Send").apply {
+        sendStopButton = AccentButton("Send").apply {
+            font = smallFont
             addActionListener { onSendStopClick() }
             toolTipText = "Send message (Enter). Shift+Enter for new line."
         }
@@ -318,8 +323,7 @@ class SessionPanel(
             font = smallFont
         }
 
-        val ctrlKey = if (System.getProperty("os.name").lowercase().contains("mac")) "Cmd" else "Ctrl"
-        val hintLabel = JLabel("Enter to send, Shift+Enter for newline, ${ctrlKey}+C×2 to stop, @file to reference").apply {
+        val hintLabel = JLabel("Enter to send · Shift+Enter for newline · Esc to stop").apply {
             foreground = JBColor(0x606060, 0x606060)
             font = monoFont.deriveFont(10f)
             border = JBUI.Borders.empty(2, 8)
@@ -341,49 +345,43 @@ class SessionPanel(
             isVisible = false
         }
 
-        debugToggle = JCheckBox("Show debug log").apply {
+        debugToggle = JCheckBox("Debug").apply {
             font = monoFont.deriveFont(10f)
             foreground = JBColor(0x606060, 0x606060)
             isOpaque = false
             isSelected = false
+            toolTipText = "Show debug log panel"
             addActionListener {
                 debugScrollPane.isVisible = isSelected
                 this@SessionPanel.revalidate()
             }
         }
 
-        val buttonPanel = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(sendStopButton, BorderLayout.NORTH)
-        }
-
-        val inputPanel = JPanel(BorderLayout(4, 0)).apply {
+        // Input area takes the full width now — Send moved into the chip row.
+        val inputPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(4)
             add(inputArea, BorderLayout.CENTER)
-            add(buttonPanel, BorderLayout.EAST)
         }
 
-        val hintsPanel = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(hintLabel, BorderLayout.WEST)
-            add(debugToggle, BorderLayout.EAST)
-        }
-
-        val statusPanel = JPanel(BorderLayout()).apply {
+        // Single bottom row: status on the left (changes as Claude works),
+        // keyboard hint on the right.
+        val statusHintPanel = JPanel(BorderLayout()).apply {
             isOpaque = false
             add(statusLabel, BorderLayout.WEST)
+            add(hintLabel, BorderLayout.EAST)
         }
+
+        val chipsPanel = buildChipsPanel(smallFont, debugToggle)
 
         val bottomPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             add(thinkingLabel)
             add(inputPanel)
-            add(hintsPanel)
-            add(statusPanel)
+            add(chipsPanel)
+            add(statusHintPanel)
             add(debugScrollPane)
         }
 
-        add(modelLabel, BorderLayout.NORTH)
         add(outputOverlay, BorderLayout.CENTER)
         add(bottomPanel, BorderLayout.SOUTH)
 
@@ -406,12 +404,66 @@ class SessionPanel(
         val text = inputArea.getFullText()
         if (text.isEmpty() || session.isBusy) return
 
+        if (looksLikeCliCommand(text)) {
+            showCliCommandWarning(text)
+            return
+        }
+
         inputArea.clear()
         autoNameTab(text)
         appendUserMessage(text)
         permissionHintShown = false
         setBusyState(true)
+        // Sending a new message means "I'm done reading history" — snap to
+        // the bottom so the user's message and Claude's reply are in view,
+        // even if they had scrolled up earlier.
+        scrollOutputToBottom()
         session.sendMessage(text)
+    }
+
+    /**
+     * Detects messages that look like Claude Code CLI invocations
+     * (`--model …`, `/help`, `/clear`, etc.) rather than chat prompts.
+     * The plugin runs claude in `-p` (non-interactive) mode, so neither
+     * slash-commands nor extra CLI flags work — they'd cause a hard CLI
+     * error or be silently ignored. Better to intercept and explain.
+     *
+     * Heuristic kept tight to avoid false positives on legitimate text:
+     *   - `--word…` at the very start (with no space before)
+     *   - `/word` as the first whitespace-separated token, where word is
+     *     a short letter-only identifier (matches `/help`, `/clear`, `/model`
+     *     but not `/Users/foo` or `/etc/hosts`)
+     */
+    private fun looksLikeCliCommand(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return false
+        if (Regex("^--[a-zA-Z]").containsMatchIn(trimmed)) return true
+        // First token: `/<letters/dashes>` followed by space or end. Path-like
+        // inputs (`/Users/...`, `/etc/passwd`) include slashes after the first
+        // segment and are skipped by the `(\\s|\$)` boundary.
+        val firstToken = trimmed.substringBefore(' ')
+        if (firstToken.length in 2..20 && Regex("^/[a-zA-Z][a-zA-Z-]*$").matches(firstToken)) {
+            return true
+        }
+        return false
+    }
+
+    private fun showCliCommandWarning(text: String) {
+        val firstToken = text.trim().substringBefore(' ').take(40)
+        appendHtml(
+            "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
+                "<span style='color: #D9B263;'>⚠ <code>${escapeHtml(firstToken)}</code> " +
+                "looks like a Claude Code CLI command, which this plugin doesn't run.</span><br/>" +
+                "<span style='color: #BCBEC4;'>Claude Code's interactive slash-commands " +
+                "(<code>/help</code>, <code>/clear</code>, <code>/model</code>, …) and CLI flags " +
+                "(<code>--model</code>, <code>--permission-mode</code>, …) aren't available in this chat.<br/>" +
+                "Use the <b>gear icon</b> in the row below the input to open <b>Settings</b>, " +
+                "or the <b>model / permission chips</b> next to it for per-session overrides.<br/>" +
+                "Edit your message and send again to chat with Claude.</span>" +
+                "</div>"
+        )
+        // Leave the text in the input area so the user can fix it and resend.
     }
 
     fun sendPrefilled(text: String) {
@@ -420,6 +472,7 @@ class SessionPanel(
         appendUserMessage(text)
         permissionHintShown = false
         setBusyState(true)
+        scrollOutputToBottom()
         session.sendMessage(text)
     }
 
@@ -455,6 +508,7 @@ class SessionPanel(
     private fun setBusyState(busy: Boolean) {
         if (busy) {
             sendStopButton.text = "Stop"
+            sendStopButton.setVariant(AccentButton.Variant.DANGER)
             sendStopButton.toolTipText = "Stop Claude (cancel current request)"
             statusLabel.text = "Claude is thinking..."
             statusLabel.foreground = JBColor(Color(0xD9, 0x77, 0x57), Color(0xD9, 0x77, 0x57))
@@ -464,6 +518,7 @@ class SessionPanel(
         } else {
             stopThinkingAnimation()
             sendStopButton.text = "Send"
+            sendStopButton.setVariant(AccentButton.Variant.ACCENT)
             sendStopButton.toolTipText = "Send message (Enter). Shift+Enter for new line."
             statusLabel.text = "Ready"
             statusLabel.foreground = JBColor(Color(0x80, 0x80, 0x80), Color(0x80, 0x80, 0x80))
@@ -710,16 +765,48 @@ class SessionPanel(
 
     override fun onModelInfo(session: ClaudeSession, model: String) {
         ApplicationManager.getApplication().invokeLater {
-            val displayName = model
-                .replace("claude-", "")
-                .replace("-2025", " (2025")
-                .let { if (it.contains("(")) "$it)" else it }
-            modelLabel.text = "Model: $displayName"
-            modelLabel.toolTipText = model
+            if (model.isBlank()) return@invokeLater
 
-            if (model.isNotBlank()) {
-                ClaudeSettings.getInstance().addCustomModel(model)
+            val constants = com.claudecode.ClaudeConstants
+            // `<synthetic>` and other `<…>` placeholders are CLI internals
+            // (cached / interrupted / tool-only turns), not real models.
+            // Skip the divergence check, chip update, and custom-model save.
+            if (constants.isPlaceholderModel(model)) return@invokeLater
+            val selected = selectedModelForDivergenceCheck
+            val diverged = selected.isNotBlank() && selected != model
+
+            if (diverged) {
+                val pair = selected to model
+                if (warnedModelPairs.add(pair)) {
+                    // First time we see this (selected → actual) divergence in
+                    // this session. Surface a one-line warn banner so the user
+                    // sees Claude fell back to a different model — common when
+                    // the selected model is rate-limited or out of credits.
+                    appendHtml(
+                        "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                            "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
+                            "<span style='color: #D9B263;'>⚠ Claude responded using " +
+                            "<b>${escapeHtml(constants.shortModelLabel(model))}</b> " +
+                            "(<code>${escapeHtml(model)}</code>) instead of your selected " +
+                            "<b>${escapeHtml(constants.shortModelLabel(selected))}</b>.</span><br/>" +
+                            "<span style='color: #808080;'>Likely a rate-limit or quota fallback. " +
+                            "The model dropdown has been updated to reflect the actual model in use.</span>" +
+                            "</div>"
+                    )
+                }
             }
+
+            // Always: refresh chip to mirror the model actually serving requests,
+            // and align the per-session override so the next message keeps
+            // using it (rather than retrying the one that just fell back).
+            ClaudeSettings.getInstance().addCustomModel(model)
+            // The set of items may have grown (custom model added) — refresh.
+            val allModels = ClaudeSettings.getInstance().getAllModels()
+            modelChip.setItems(allModels.map { it to constants.shortModelLabel(it) })
+            modelChip.updateLabel(constants.shortModelLabel(model))
+            modelChip.toolTipText = "Model: $model"
+            session.modelOverride = model
+            selectedModelForDivergenceCheck = model
         }
     }
 
@@ -735,7 +822,7 @@ class SessionPanel(
         }
     }
 
-    override fun onPermissionBlocked(session: ClaudeSession, toolName: String?) {
+    override fun onPermissionBlocked(session: ClaudeSession, toolName: String?, toolInputDetail: String?) {
         ApplicationManager.getApplication().invokeLater {
             // Fire the hint immediately based on the structured tool_result \u2014
             // don't wait for the model to produce natural-language text. This
@@ -743,19 +830,173 @@ class SessionPanel(
             // and more reliably.
             if (permissionHintShown) return@invokeLater
             permissionHintShown = true
-            val currentMode = ClaudeSettings.getInstance().state.permissionMode
-            val toolLabel = if (!toolName.isNullOrBlank()) " (<code>$toolName</code>)" else ""
-            appendHtml(
-                "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                    "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
-                    "<span style='color: #D9B263;'>\u26a0 A tool$toolLabel was blocked by your current permission mode " +
-                    "(<code>$currentMode</code>).</span><br/>" +
-                    "Open <a href=\"http://localhost/action/open-settings\">Settings</a> and switch to " +
-                    "<b>bypassPermissions</b> to allow shell commands, or keep <b>acceptEdits</b> for file " +
-                    "edits only \u2014 then re-run your request." +
-                    "</div>"
-            )
+            renderPermissionBlockedBanner(toolName, toolInputDetail)
         }
+    }
+
+    /**
+     * Renders the yellow "blocked by permission mode" banner with three
+     * one-click remediations:
+     *   1. Allow this exact command/path  \u2192 writes `.claude/settings.local.json`
+     *   2. Allow all <Tool> calls         \u2192 ditto, broader pattern
+     *   3. Change mode to Unrestricted    \u2192 flips the permission chip
+     *
+     * Each link carries a generated key so the click handler can look up
+     * which (tool, input) pair this banner was for, even if multiple
+     * banners stack in the same session.
+     */
+    private fun renderPermissionBlockedBanner(toolName: String?, toolInputDetail: String?) {
+        val currentMode = ClaudeSettings.getInstance().state.permissionMode
+        val currentModeLabel = com.claudecode.ClaudeConstants.shortPermissionModeLabel(currentMode)
+        val safeToolName = toolName?.takeIf { it.isNotBlank() } ?: "tool"
+
+        val key = "grant-${grantCounter++}"
+        pendingGrants[key] = safeToolName to toolInputDetail
+
+        val specificPattern = com.claudecode.project.ProjectAllowlist.patternFor(safeToolName, toolInputDetail)
+        val broadPattern = com.claudecode.project.ProjectAllowlist.patternFor(safeToolName, null)
+        val hasSpecific = !toolInputDetail.isNullOrBlank() && specificPattern != broadPattern
+
+        val toolLabel = " (<code>${escapeHtml(safeToolName)}</code>)"
+        val detailLabel = if (!toolInputDetail.isNullOrBlank())
+            "<div style='color: #808080; margin-top: 4px;'>Attempted: <code>${escapeHtml(toolInputDetail.take(200))}</code></div>"
+        else ""
+
+        val actions = buildString {
+            append("<div style='color: #BCBEC4; margin-top: 6px;'>Choose one:</div>")
+            if (hasSpecific) {
+                append("<div style='margin-top: 2px;'>\u2022 ")
+                append("<a href=\"http://localhost/action/grant-specific/$key\">")
+                append("Allow this exact ${escapeHtml(safeToolName.lowercase())}")
+                append("</a></div>")
+            }
+            append("<div style='margin-top: 2px;'>\u2022 ")
+            append("<a href=\"http://localhost/action/grant-broad/$key\">")
+            append("Allow all <code>${escapeHtml(safeToolName)}</code> calls")
+            append("</a></div>")
+            append("<div style='margin-top: 2px;'>\u2022 ")
+            append("<a href=\"http://localhost/action/grant-unrestricted/$key\">")
+            append("Switch to Unrestricted mode")
+            append("</a></div>")
+            append("<div style='color: #707070; font-style: italic; margin-top: 6px;'>")
+            append("Allow-list edits write to <code>.claude/settings.local.json</code> in this project; ")
+            append("mode change is per-session via the permission chip.")
+            append("</div>")
+        }
+
+        // The banner gets a stable id so we can swap its HTML in-place after
+        // the user picks one of the actions \u2014 removes the "I can click again"
+        // ambiguity without leaving the warning AND a separate confirmation
+        // stacked in the chat.
+        val bannerId = bannerIdFor(key)
+        appendHtml(
+            "<div id='$bannerId' class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
+                "<div style='color: #D9B263;'>\u26a0 A tool$toolLabel was blocked by your current permission mode " +
+                "(<b>${escapeHtml(currentModeLabel)}</b>).</div>" +
+                detailLabel +
+                actions +
+                "</div>"
+        )
+    }
+
+    private fun bannerIdFor(key: String): String = "permblock-$key"
+
+    /**
+     * Replaces the banner's HTML in place. Used after the user picks an
+     * action so the choice is final and the action links can't be re-clicked.
+     */
+    private fun replacePermissionBanner(key: String, newInnerHtml: String, accentColor: String) {
+        val doc = outputPane.document as? HTMLDocument ?: return
+        val element = doc.getElement(bannerIdFor(key)) ?: return
+        val replacement = "<div id='${bannerIdFor(key)}' class='system-msg' " +
+            "style='margin: 6px 0; padding: 6px 10px; " +
+            "border-left: 3px solid $accentColor; background-color: #2B2D30;'>" +
+            newInnerHtml +
+            "</div>"
+        try {
+            doc.setOuterHTML(element, replacement)
+        } catch (e: Exception) {
+            // Fallback: just append below the banner \u2014 better than crashing.
+            appendHtml(replacement)
+        }
+    }
+
+    private fun applyGrant(key: String, broad: Boolean) {
+        val (toolName, inputDetail) = pendingGrants[key] ?: return
+        // Single-use: prevent the same banner from being applied twice.
+        pendingGrants.remove(key)
+        val pattern = com.claudecode.project.ProjectAllowlist.patternFor(
+            toolName,
+            if (broad) null else inputDetail
+        )
+        // File I/O off the EDT \u2014 JSON parse+write is fast but should never
+        // block the event dispatch thread on principle.
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val result = com.claudecode.project.ProjectAllowlist.addAllow(
+                session.workingDirectory,
+                pattern
+            )
+            ApplicationManager.getApplication().invokeLater {
+                renderGrantResult(key, result)
+            }
+        }
+    }
+
+    private fun renderGrantResult(key: String, result: com.claudecode.project.ProjectAllowlist.Result) {
+        if (!result.success) {
+            // Re-open the choice \u2014 write failed, user might want a different
+            // action (or to retry after fixing perms).
+            pendingGrants[key] = (pendingGrants[key] ?: ("tool" to null))
+            replacePermissionBanner(
+                key,
+                "<div style='color: #FF6B68;'>\u2717 Could not update " +
+                    "<code>${escapeHtml(result.filePath)}</code>: " +
+                    "${escapeHtml(result.error ?: "unknown error")}</div>",
+                accentColor = "#FF6B68",
+            )
+            return
+        }
+        // Tell IntelliJ's VFS about the on-disk change so the Project view
+        // and any open editor reflect the new content immediately \u2014 without
+        // this, the user has to manually right-click \u2192 Reload from Disk on
+        // the .claude folder. Refresh both the parent dir (so .claude itself
+        // appears the first time we create it) and the file itself.
+        if (!result.alreadyPresent) {
+            val targetFile = java.io.File(result.filePath)
+            val toRefresh = listOfNotNull(targetFile.parentFile, targetFile)
+            LocalFileSystem.getInstance().refreshIoFiles(toRefresh, true, true, null)
+        }
+
+        val verb = if (result.alreadyPresent) "Already in" else "Added to"
+        replacePermissionBanner(
+            key,
+            "<div style='color: #6A8759;'>\u2713 $verb project allowlist: " +
+                "<code>${escapeHtml(result.pattern)}</code></div>" +
+                "<div style='color: #808080; margin-top: 4px;'>Resend your message \u2014 Claude will " +
+                "now be allowed to run it under the current permission mode.</div>",
+            accentColor = "#6A8759",
+        )
+        // Allow another blocked-banner to fire on the next denial.
+        permissionHintShown = false
+    }
+
+    private fun switchToUnrestricted(key: String) {
+        pendingGrants.remove(key)
+        val mode = com.claudecode.ClaudeConstants.PERMISSION_MODE_BYPASS
+        session.permissionModeOverride = mode
+        permissionChip.updateLabel(com.claudecode.ClaudeConstants.shortPermissionModeLabel(mode))
+        permissionChip.toolTipText = "Permission mode: " +
+            com.claudecode.ClaudeConstants.describePermissionMode(mode)
+        replacePermissionBanner(
+            key,
+            "<div style='color: #6A8759;'>\u2713 Switched permission mode to <b>Unrestricted</b> " +
+                "for this session.</div>" +
+                "<div style='color: #808080; margin-top: 4px;'>Resend your message to retry. " +
+                "Global default is unchanged \u2014 open Settings to make it permanent.</div>",
+            accentColor = "#6A8759",
+        )
+        permissionHintShown = false
     }
 
     override fun onFinished(session: ClaudeSession, costUsd: Double?) {
@@ -965,20 +1206,38 @@ class SessionPanel(
      * inline hint pointing to Settings. Only fires once per response so it
      * doesn't pile up across streaming chunks.
      */
+    /**
+     * Fires once per session, the first time the user changes the model or
+     * permission chip. Surfaces the per-session-vs-global distinction so a
+     * user who expected the change to stick across sessions knows where to
+     * make it permanent. Subsequent chip changes are silent.
+     */
+    private fun maybeShowChipScopeHint() {
+        if (chipScopeHintShown) return
+        chipScopeHintShown = true
+        appendHtml(
+            "<div class='system-msg' style='margin: 4px 0; padding: 4px 10px; " +
+                "color: #808080; font-style: italic;'>" +
+                "ⓘ Chip changes apply to this session only. To set a new default, " +
+                "open <a href=\"http://localhost/action/open-settings\">Settings</a> via the gear icon." +
+                "</div>"
+        )
+    }
+
     private fun maybeShowPermissionHint(text: String) {
         if (permissionHintShown) return
         if (!looksLikePermissionBlocked(text)) return
         permissionHintShown = true
 
         val currentMode = ClaudeSettings.getInstance().state.permissionMode
+        val currentModeLabel = com.claudecode.ClaudeConstants.shortPermissionModeLabel(currentMode)
         appendHtml(
             "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
                 "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
                 "<span style='color: #D9B263;'>⚠ Looks like a tool was blocked by your current permission mode " +
-                "(<code>$currentMode</code>).</span><br/>" +
-                "Open <a href=\"http://localhost/action/open-settings\">Settings</a> and switch to " +
-                "<b>acceptEdits</b> (lets file writes through) or <b>bypassPermissions</b> (allows everything " +
-                "including shell commands) — then re-run your request." +
+                "(<b>$currentModeLabel</b>).</span><br/>" +
+                "Switch the permission chip above the input area to <b>Content Only</b> (lets file writes through) " +
+                "or <b>Unrestricted</b> (allows everything including shell commands) — then re-run your request." +
                 "</div>"
         )
     }
@@ -1227,11 +1486,104 @@ class SessionPanel(
         inputArea.requestFocusInWindow()
     }
 
+    /**
+     * Builds the inline chip row (model + permission mode), Cursor-style:
+     * flat borderless chips with a small caret, opening a popup menu on
+     * click. Selections are per-session overrides on the [ClaudeSession];
+     * the global defaults in [ClaudeSettings] remain the source of truth
+     * for new sessions.
+     */
+    private fun buildChipsPanel(smallFont: Font, debugToggleComponent: JComponent): JComponent {
+        val settings = ClaudeSettings.getInstance()
+        val state = settings.state
+        val constants = com.claudecode.ClaudeConstants
+
+        // Model chip — built-in models + any custom IDs the user has used.
+        // Empty string is shown as "Default" (CLI picks).
+        val initialModel = if (state.model in settings.getAllModels()) state.model else ""
+        selectedModelForDivergenceCheck = initialModel
+        modelChip = ChipDropdown(constants.shortModelLabel(initialModel), smallFont).apply {
+            toolTipText = "Model — click to switch (per-session)"
+            setItems(settings.getAllModels().map { it to constants.shortModelLabel(it) })
+            onPick { value ->
+                session.modelOverride = value
+                selectedModelForDivergenceCheck = value
+                // Picking a model clears prior warnings for this session so the
+                // user gets a fresh signal if it diverges again.
+                warnedModelPairs.clear()
+                updateLabel(constants.shortModelLabel(value))
+                toolTipText = "Model: " + if (value.isBlank()) "CLI default" else value
+                maybeShowChipScopeHint()
+            }
+        }
+
+        // Permission chip — three modes that make sense in -p (non-interactive).
+        val initialPerm = state.permissionMode
+            .takeIf { it in constants.PERMISSION_MODES }
+            ?: constants.PERMISSION_MODE_ACCEPT_EDITS
+        permissionChip = ChipDropdown(constants.shortPermissionModeLabel(initialPerm), smallFont).apply {
+            toolTipText = "Permission mode: ${constants.describePermissionMode(initialPerm)}"
+            setItems(constants.PERMISSION_MODES.map { it to constants.shortPermissionModeLabel(it) })
+            onPick { value ->
+                session.permissionModeOverride = value
+                updateLabel(constants.shortPermissionModeLabel(value))
+                toolTipText = "Permission mode: ${constants.describePermissionMode(value)}"
+                maybeShowChipScopeHint()
+            }
+        }
+
+        // Gear → opens our Settings page. AllIcons.General.GearPlain exists in
+        // 2024.1+; verified against AllIcons$General signatures.
+        val gearButton = IconChipButton(
+            com.intellij.icons.AllIcons.General.GearPlain,
+            "Plugin settings"
+        ).apply {
+            addActionListener { openClaudeSettings() }
+        }
+
+        // Left strip — chips + debug toggle. Wrapped in a non-vertical scroll
+        // pane so it can scroll horizontally when the tool window is too
+        // narrow to fit everything alongside the pinned right-side actions.
+        val leftStrip = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+            add(modelChip)
+            add(Box.createHorizontalStrut(4))
+            add(permissionChip)
+            add(Box.createHorizontalStrut(8))
+            add(debugToggleComponent)
+        }
+        val leftScroll = JBScrollPane(leftStrip).apply {
+            border = JBUI.Borders.empty()
+            horizontalScrollBarPolicy = javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+            verticalScrollBarPolicy = javax.swing.ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER
+            isOpaque = false
+            viewport.isOpaque = false
+            // Match the chip row's natural height — let the layout decide the width.
+            // BorderLayout.CENTER fills the available horizontal space anyway.
+            preferredSize = Dimension(0, leftStrip.preferredSize.height)
+        }
+
+        // Right strip — gear + Send. Always visible: BorderLayout.EAST locks
+        // it to its preferred width regardless of how narrow the panel gets.
+        val rightActions = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+            add(gearButton)
+            add(Box.createHorizontalStrut(4))
+            add(sendStopButton)
+        }
+
+        return JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(4, 6)
+            isOpaque = false
+            add(leftScroll, BorderLayout.CENTER)
+            add(rightActions, BorderLayout.EAST)
+        }
+    }
+
     fun dispose() {
         stopThinkingAnimation()
-        ctrlCDispatcher?.let {
-            KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(it)
-        }
         session.removeListener(this)
     }
 }

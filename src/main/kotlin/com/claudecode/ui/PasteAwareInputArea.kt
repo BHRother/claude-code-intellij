@@ -7,8 +7,6 @@ import com.intellij.util.ui.JBUI
 import java.awt.*
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
-import java.awt.event.ActionEvent
-import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 import java.io.File
 import javax.swing.*
@@ -21,23 +19,13 @@ class PasteAwareInputArea(
 ) : JPanel(BorderLayout()) {
 
     private val textPane: JTextPane
+    private val scrollPane: JBScrollPane
     private val chipContentMap = mutableMapOf<Component, String>()
     private var pasteCounter = 0
 
     // Suppresses the document-filter's smart handling for inserts we make ourselves
     // (chip components, file refs, programmatic text setters).
     private var isProgrammaticInsert = false
-
-    // Timestamp of the most recent chip we created from our paste handler
-    // (GlobalDispatcher → handleClipboardPaste → insertChip). Used by the
-    // DocumentFilter to suppress duplicate large-text inserts produced by
-    // IntelliJ's $Paste action racing with our handler: clipboards with
-    // both stringFlavor (plain) and HTML flavors get pasted twice — once
-    // by our handler reading stringFlavor, once by the IDE inserting the
-    // HTML representation (flattened to text) into the document. The
-    // second insert lands within milliseconds of the first; if it's large
-    // enough to chip, this guard drops it.
-    @Volatile private var recentlyChippedAt: Long = 0L
 
     init {
         isOpaque = false
@@ -56,7 +44,7 @@ class PasteAwareInputArea(
         installDocumentFilter()
         installPasteHandlers()
 
-        val scrollPane = JBScrollPane(textPane).apply {
+        scrollPane = JBScrollPane(textPane).apply {
             border = JBUI.Borders.empty()
             verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
@@ -65,43 +53,94 @@ class PasteAwareInputArea(
         add(scrollPane, BorderLayout.CENTER)
     }
 
+    /**
+     * Enables Cursor-style auto-expansion. The input starts at [minLines] tall,
+     * grows row-by-row as the user types, and caps at [maxLines] — past that
+     * the vertical scrollbar kicks in. Submitting (which clears the text)
+     * brings it back down to [minLines].
+     *
+     * Computes target height from the textPane's own preferred size so
+     * word-wrapped long lines count correctly.
+     */
+    fun enableAutoGrow(minLines: Int, maxLines: Int) {
+        autoGrowMinLines = minLines
+        autoGrowMaxLines = maxLines
+        textPane.styledDocument.addDocumentListener(object : javax.swing.event.DocumentListener {
+            override fun insertUpdate(e: javax.swing.event.DocumentEvent) = scheduleAutoGrow()
+            override fun removeUpdate(e: javax.swing.event.DocumentEvent) = scheduleAutoGrow()
+            override fun changedUpdate(e: javax.swing.event.DocumentEvent) = scheduleAutoGrow()
+        })
+        // Apply initial sizing once the panel has a width to compute wrapping from.
+        SwingUtilities.invokeLater { applyAutoGrow() }
+    }
+
+    private var autoGrowMinLines: Int = 0
+    private var autoGrowMaxLines: Int = 0
+
+    /**
+     * Fires immediately BEFORE the input area changes its preferred height
+     * via auto-grow. Lets the host (SessionPanel) snapshot scroll state and
+     * re-pin it after the parent layout settles — without this, growing the
+     * input shifts the chat output upward and breaks the "stick to bottom"
+     * affordance.
+     */
+    var onBeforeAutoGrow: (() -> Unit)? = null
+
+    private fun scheduleAutoGrow() {
+        // DocumentListener fires inside the document mutation — deferring to
+        // invokeLater lets the textPane recompute its preferredSize after the
+        // text actually lands, and avoids re-entrancy with DocumentFilter.
+        SwingUtilities.invokeLater { applyAutoGrow() }
+    }
+
+    private fun applyAutoGrow() {
+        if (autoGrowMinLines <= 0) return
+        val fm = textPane.getFontMetrics(textPane.font)
+        val lineH = fm.height
+        val verticalInsets = scrollPane.insets.let { it.top + it.bottom } +
+            insets.let { it.top + it.bottom }
+        val minH = lineH * autoGrowMinLines + verticalInsets
+        val maxH = lineH * autoGrowMaxLines + verticalInsets
+        // textPane.preferredSize reflects the wrapped text height. Use the
+        // pane's own preferredSize so long lines that wrap count as multiple
+        // visual rows.
+        val natural = textPane.preferredSize.height + verticalInsets
+        val target = natural.coerceIn(minH, maxH)
+        if (preferredSize.height != target) {
+            onBeforeAutoGrow?.invoke()
+            preferredSize = Dimension(preferredSize.width, target)
+            // Tell the bottom-panel BoxLayout to re-layout above us.
+            parent?.let { p ->
+                p.revalidate()
+                p.repaint()
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Paste interception
+    //
+    // Two — and only two — paste entry points:
+    //
+    //   1. AnAction registered for Cmd/Ctrl+V scoped to textPane. IntelliJ's
+    //      IdeKeyEventDispatcher checks component-scoped shortcuts before
+    //      routing to the default $Paste action, so our handler runs
+    //      *instead of* $Paste — not in addition to it. No racing insert,
+    //      no duplicate chip.
+    //
+    //   2. TransferHandler for drag-and-drop. Independent path; DnD events
+    //      never collide with the key-event path.
+    //
+    // The DocumentFilter (installed separately) catches text inserts from
+    // *other* sources (autocomplete, programmatic edits) but never chips
+    // for a paste action — that's the AnAction's job. This means exactly
+    // one chip-creating path per user action. No dedupe needed.
     // ------------------------------------------------------------------
 
     private fun installPasteHandlers() {
-        val pasteAction = object : AbstractAction() {
-            override fun actionPerformed(e: ActionEvent?) {
-                LOG.info("paste-entry: ActionMap pasteAction fired")
-                handleClipboardPaste()
-            }
-        }
-
-        // Bind every paste action name we know of to our handler.
-        val inputMap = textPane.getInputMap(JComponent.WHEN_FOCUSED)
-        val actionMap = textPane.actionMap
-        val menuMask = Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx
-
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_V, menuMask), "smart-paste")
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_INSERT, InputEvent.SHIFT_DOWN_MASK), "smart-paste")
-        actionMap.put("smart-paste", pasteAction)
-        actionMap.put("paste", pasteAction)
-        actionMap.put("paste-from-clipboard", pasteAction)
-        actionMap.put(DefaultEditorKit.pasteAction, pasteAction)
-
-        // Low-level safety net: even if some IDE handler steals the action lookup,
-        // catch Cmd/Ctrl+V at the key event level and consume it.
-        textPane.addKeyListener(object : java.awt.event.KeyAdapter() {
-            override fun keyPressed(e: KeyEvent) {
-                if (e.keyCode == KeyEvent.VK_V && (e.isMetaDown || e.isControlDown) && !e.isAltDown) {
-                    LOG.info("paste-entry: KeyListener VK_V (meta=${e.isMetaDown}, ctrl=${e.isControlDown})")
-                    e.consume()
-                    handleClipboardPaste()
-                }
-            }
-        })
-
-        // TransferHandler covers DnD plus the TransferHandler-based paste fallback.
+        // TransferHandler — only for drag-and-drop. Cmd/Ctrl+V is handled
+        // by the AnAction override (installed in addNotify). Keeping
+        // canImport/getSourceActions correct so DnD targeting works.
         textPane.transferHandler = object : TransferHandler() {
             override fun importData(comp: JComponent?, t: Transferable?): Boolean {
                 return importTransferable(t)
@@ -127,66 +166,55 @@ class PasteAwareInputArea(
 
             override fun getSourceActions(c: JComponent?): Int = COPY_OR_MOVE
         }
-
-        // Top-priority safety net: AWT KeyboardFocusManager dispatches key
-        // events BEFORE IntelliJ's IdeKeyEventDispatcher routes them to the
-        // platform action system. By inserting our own KeyEventDispatcher we
-        // can catch Cmd/Ctrl+V before the IDE's $Paste action runs, which is
-        // necessary on IntelliJ Ultimate 2025.1+ where the IDE's paste
-        // handler appears to intercept the keystroke before our Swing-level
-        // hooks (KeyListener, ActionMap, TransferHandler) get a chance.
-        // We only consume the event when our chat input is focused; otherwise
-        // we return false and let normal dispatch proceed.
-        // NOTE: actual install happens in addNotify() — see below — so the
-        // dispatcher lifecycle matches the panel's visibility lifecycle.
     }
 
-    private var globalPasteDispatcher: java.awt.KeyEventDispatcher? = null
+    private var pasteActionOverride: com.intellij.openapi.actionSystem.AnAction? = null
 
-    private fun installGlobalPasteDispatcher() {
-        if (globalPasteDispatcher != null) return  // already installed, idempotent
-        val dispatcher = java.awt.KeyEventDispatcher { e ->
-            if (e.id != KeyEvent.KEY_PRESSED) return@KeyEventDispatcher false
-            if (e.keyCode != KeyEvent.VK_V) return@KeyEventDispatcher false
-            if (e.isAltDown) return@KeyEventDispatcher false
-            if (!e.isMetaDown && !e.isControlDown) return@KeyEventDispatcher false
-
-            val focused = java.awt.KeyboardFocusManager
-                .getCurrentKeyboardFocusManager().focusOwner
-            val isOurInput = focused === textPane ||
-                (focused != null && SwingUtilities.isDescendingFrom(focused, this@PasteAwareInputArea))
-            if (!isOurInput) return@KeyEventDispatcher false
-
-            LOG.info("paste-entry: GlobalDispatcher VK_V (focusOwner=${focused?.javaClass?.simpleName})")
-            handleClipboardPaste()
-            true   // consume — don't let the IDE's $Paste action also run
+    /**
+     * Register an IntelliJ AnAction for Cmd/Ctrl+V scoped to the textPane.
+     * IntelliJ's IdeKeyEventDispatcher checks component-scoped shortcuts
+     * BEFORE routing the key event to the default $Paste action — so when
+     * our action handles the event, $Paste never runs, doc.insertString
+     * never fires from the racing path, and there's exactly one chip per
+     * paste.
+     *
+     * Install/uninstall is tied to addNotify/removeNotify so the action
+     * stays alive across tool-window hide/show cycles.
+     */
+    private fun installPasteActionOverride() {
+        if (pasteActionOverride != null) return
+        val action = object : com.intellij.openapi.actionSystem.AnAction() {
+            override fun getActionUpdateThread() =
+                com.intellij.openapi.actionSystem.ActionUpdateThread.BGT
+            override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) {
+                LOG.info("paste-entry: AnAction \$Paste override fired")
+                handleClipboardPaste()
+            }
         }
-        globalPasteDispatcher = dispatcher
-        java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager()
-            .addKeyEventDispatcher(dispatcher)
+        // menuShortcutKeyMaskEx → Cmd on macOS, Ctrl on Linux/Windows.
+        val pasteKeyStroke = KeyStroke.getKeyStroke(
+            KeyEvent.VK_V,
+            Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx
+        )
+        val shortcutSet = com.intellij.openapi.actionSystem.CustomShortcutSet(
+            com.intellij.openapi.actionSystem.KeyboardShortcut(pasteKeyStroke, null)
+        )
+        action.registerCustomShortcutSet(shortcutSet, textPane)
+        pasteActionOverride = action
     }
 
-    private fun uninstallGlobalPasteDispatcher() {
-        globalPasteDispatcher?.let {
-            java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager()
-                .removeKeyEventDispatcher(it)
-        }
-        globalPasteDispatcher = null
+    private fun uninstallPasteActionOverride() {
+        pasteActionOverride?.unregisterCustomShortcutSet(textPane)
+        pasteActionOverride = null
     }
 
-    // The dispatcher must follow the panel's add/remove-from-hierarchy
-    // lifecycle, not the constructor: IntelliJ tool windows fire removeNotify
-    // when they're hidden/collapsed and addNotify when they're shown again.
-    // Earlier we only installed in the constructor and uninstalled in
-    // removeNotify — which meant "hide the Claude tool window, show it again"
-    // permanently lost image-paste support until the next plugin reload.
     override fun addNotify() {
         super.addNotify()
-        installGlobalPasteDispatcher()
+        installPasteActionOverride()
     }
 
     override fun removeNotify() {
-        uninstallGlobalPasteDispatcher()
+        uninstallPasteActionOverride()
         super.removeNotify()
     }
 
@@ -781,23 +809,11 @@ class PasteAwareInputArea(
             }
         }
 
-        // 3. Big paste → text chip. BUT first: if our handler-driven paste
-        // just created a chip within the last 250ms, this large insert is
-        // almost certainly the IDE's $Paste action racing with our
-        // GlobalDispatcher — same logical paste, different clipboard flavor
-        // (e.g. plain-text via our handler, HTML-flattened-to-text via the
-        // IDE). Drop it to avoid the double-chip bug. The user-visible chip
-        // is the one our handler already produced.
+        // 3. Big paste → text chip. The AnAction override is the only path
+        // that produces text chips for Cmd/Ctrl+V; this branch only fires
+        // for non-paste inserts (programmatic edits, autocomplete, etc.)
+        // that happen to be large.
         val isLargePaste = text.length >= CHIP_CHAR_THRESHOLD || lines.size > CHIP_LINE_THRESHOLD
-        if (isLargePaste &&
-            (System.currentTimeMillis() - recentlyChippedAt) < DUPE_SUPPRESS_WINDOW_MS
-        ) {
-            LOG.info("paste: suppressed duplicate large insert (len=${text.length}, " +
-                "lines=${lines.size}) — racing \$Paste action after our chip")
-            if (length > 0) fb.replace(offset, length, "", attrs)
-            return
-        }
-
         if (isLargePaste) {
             if (length > 0) fb.replace(offset, length, "", attrs)
             insertTextChipViaBypass(fb, offset, text, lines.size)
@@ -1053,7 +1069,6 @@ class PasteAwareInputArea(
      */
     private fun insertChip(label: String, content: String, tooltip: String?, expandable: Boolean = false) {
         pasteCounter++
-        recentlyChippedAt = System.currentTimeMillis()
         val chip = createChip(label, content, tooltip, expandable = expandable)
         val style = textPane.addStyle("chip-$pasteCounter", null)
         StyleConstants.setComponent(style, chip)
@@ -1285,12 +1300,6 @@ class PasteAwareInputArea(
         private val LOG = Logger.getInstance(PasteAwareInputArea::class.java)
         private const val CHIP_CHAR_THRESHOLD = 250
         private const val CHIP_LINE_THRESHOLD = 3
-        // Window during which a large insert through the DocumentFilter is
-        // assumed to be the IDE's $Paste action racing with our handler.
-        // 250ms is comfortable headroom — the racing insert typically lands
-        // within 1-50ms — without being so long that a real user-initiated
-        // large paste right after a chip would get swallowed.
-        private const val DUPE_SUPPRESS_WINDOW_MS = 250L
         // Probed in order. Languages first, then markup/data, then scripts/config.
         private val COMMON_FILE_EXTENSIONS = listOf(
             "kt", "kts", "java", "py", "ts", "tsx", "js", "jsx",

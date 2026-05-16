@@ -30,10 +30,13 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
     }
 
     fun getCustomModelsList(): List<String> =
-        myState.customModels.split(",").filter { it.isNotBlank() }
+        myState.customModels.split(",")
+            .filter { it.isNotBlank() }
+            .filterNot { com.claudecode.ClaudeConstants.isPlaceholderModel(it) }
 
     fun addCustomModel(model: String) {
         if (model.isBlank()) return
+        if (com.claudecode.ClaudeConstants.isPlaceholderModel(model)) return
         if (model in com.claudecode.ClaudeConstants.AVAILABLE_MODELS) return
         val existing = getCustomModelsList().toMutableList()
         if (model !in existing) {
@@ -43,7 +46,9 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
     }
 
     fun getAllModels(): List<String> =
-        (com.claudecode.ClaudeConstants.AVAILABLE_MODELS + getCustomModelsList()).distinct()
+        (com.claudecode.ClaudeConstants.AVAILABLE_MODELS + getCustomModelsList())
+            .distinct()
+            .filterNot { com.claudecode.ClaudeConstants.isPlaceholderModel(it) }
 
     companion object {
         fun getInstance(): ClaudeSettings =
