@@ -61,7 +61,7 @@ class PasteAwareInputArea(
     private fun installPasteHandlers() {
         val pasteAction = object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) {
-                LOG.warn("paste-entry: ActionMap pasteAction fired")
+                LOG.info("paste-entry: ActionMap pasteAction fired")
                 handleClipboardPaste()
             }
         }
@@ -83,7 +83,7 @@ class PasteAwareInputArea(
         textPane.addKeyListener(object : java.awt.event.KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
                 if (e.keyCode == KeyEvent.VK_V && (e.isMetaDown || e.isControlDown) && !e.isAltDown) {
-                    LOG.warn("paste-entry: KeyListener VK_V (meta=${e.isMetaDown}, ctrl=${e.isControlDown})")
+                    LOG.info("paste-entry: KeyListener VK_V (meta=${e.isMetaDown}, ctrl=${e.isControlDown})")
                     e.consume()
                     handleClipboardPaste()
                 }
@@ -116,6 +116,67 @@ class PasteAwareInputArea(
 
             override fun getSourceActions(c: JComponent?): Int = COPY_OR_MOVE
         }
+
+        // Top-priority safety net: AWT KeyboardFocusManager dispatches key
+        // events BEFORE IntelliJ's IdeKeyEventDispatcher routes them to the
+        // platform action system. By inserting our own KeyEventDispatcher we
+        // can catch Cmd/Ctrl+V before the IDE's $Paste action runs, which is
+        // necessary on IntelliJ Ultimate 2025.1+ where the IDE's paste
+        // handler appears to intercept the keystroke before our Swing-level
+        // hooks (KeyListener, ActionMap, TransferHandler) get a chance.
+        // We only consume the event when our chat input is focused; otherwise
+        // we return false and let normal dispatch proceed.
+        // NOTE: actual install happens in addNotify() — see below — so the
+        // dispatcher lifecycle matches the panel's visibility lifecycle.
+    }
+
+    private var globalPasteDispatcher: java.awt.KeyEventDispatcher? = null
+
+    private fun installGlobalPasteDispatcher() {
+        if (globalPasteDispatcher != null) return  // already installed, idempotent
+        val dispatcher = java.awt.KeyEventDispatcher { e ->
+            if (e.id != KeyEvent.KEY_PRESSED) return@KeyEventDispatcher false
+            if (e.keyCode != KeyEvent.VK_V) return@KeyEventDispatcher false
+            if (e.isAltDown) return@KeyEventDispatcher false
+            if (!e.isMetaDown && !e.isControlDown) return@KeyEventDispatcher false
+
+            val focused = java.awt.KeyboardFocusManager
+                .getCurrentKeyboardFocusManager().focusOwner
+            val isOurInput = focused === textPane ||
+                (focused != null && SwingUtilities.isDescendingFrom(focused, this@PasteAwareInputArea))
+            if (!isOurInput) return@KeyEventDispatcher false
+
+            LOG.info("paste-entry: GlobalDispatcher VK_V (focusOwner=${focused?.javaClass?.simpleName})")
+            handleClipboardPaste()
+            true   // consume — don't let the IDE's $Paste action also run
+        }
+        globalPasteDispatcher = dispatcher
+        java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager()
+            .addKeyEventDispatcher(dispatcher)
+    }
+
+    private fun uninstallGlobalPasteDispatcher() {
+        globalPasteDispatcher?.let {
+            java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager()
+                .removeKeyEventDispatcher(it)
+        }
+        globalPasteDispatcher = null
+    }
+
+    // The dispatcher must follow the panel's add/remove-from-hierarchy
+    // lifecycle, not the constructor: IntelliJ tool windows fire removeNotify
+    // when they're hidden/collapsed and addNotify when they're shown again.
+    // Earlier we only installed in the constructor and uninstalled in
+    // removeNotify — which meant "hide the Claude tool window, show it again"
+    // permanently lost image-paste support until the next plugin reload.
+    override fun addNotify() {
+        super.addNotify()
+        installGlobalPasteDispatcher()
+    }
+
+    override fun removeNotify() {
+        uninstallGlobalPasteDispatcher()
+        super.removeNotify()
     }
 
     private fun handleClipboardPaste() {
@@ -156,24 +217,26 @@ class PasteAwareInputArea(
         // On macOS, try osascript first — JBR's clipboard bridge often
         // misses image flavors that NSPasteboard exposes natively (same
         // pattern as the file-paste path above).
-        // NOTE: diagnostics below intentionally use WARN, not INFO, because
-        // IntelliJ's default logger config filters INFO out of idea.log.
-        // We want these visible while diagnosing image-paste reliability.
-        LOG.warn("paste: handler entered")
+        // Routine paste-flow trace at INFO. Enable per-category in
+        // Help → Diagnostic Tools → Debug Log Settings if you need this in
+        // idea.log without restarting. The "insertImageFromTransferable
+        // returned false" branch stays WARN because it's a real anomaly
+        // (clipboard advertised an image but we couldn't extract it).
+        LOG.info("paste: handler entered")
         val macImage = readClipboardImageViaOsascript()
         if (macImage != null) {
-            LOG.warn("paste: osascript image -> ${macImage.absolutePath}")
+            LOG.info("paste: osascript image -> ${macImage.absolutePath}")
             insertImageReference(macImage, dimensionsOfFile(macImage))
             return
         }
         for (data in listOfNotNull(ideContents, systemContents)) {
             val flavors = data.transferDataFlavors?.joinToString(", ") { it.mimeType.substringBefore(';') }
                 ?: "(none)"
-            LOG.warn("paste: flavors=[$flavors]")
+            LOG.info("paste: flavors=[$flavors]")
             if (data.isDataFlavorSupported(DataFlavor.imageFlavor)) {
-                LOG.warn("paste: imageFlavor advertised; trying insertImageFromTransferable")
+                LOG.info("paste: imageFlavor advertised; trying insertImageFromTransferable")
                 if (insertImageFromTransferable(data)) {
-                    LOG.warn("paste: image inserted via transferable")
+                    LOG.info("paste: image inserted via transferable")
                     return
                 }
                 LOG.warn("paste: insertImageFromTransferable returned false")
@@ -280,7 +343,7 @@ class PasteAwareInputArea(
     }
 
     private fun importTransferable(data: Transferable?): Boolean {
-        LOG.warn("paste-entry: TransferHandler.importTransferable (data=${data != null})")
+        LOG.info("paste-entry: TransferHandler.importTransferable (data=${data != null})")
         if (data == null) return false
 
         // 1. Image data first — screenshots and image copies should land as
@@ -374,11 +437,11 @@ class PasteAwareInputArea(
                 return null
             }
             if (output == "ok" && tempFile.length() > 0) {
-                LOG.warn("osascript clipboard image read: ${tempFile.length()} bytes -> ${tempFile.absolutePath}")
+                LOG.info("osascript clipboard image read: ${tempFile.length()} bytes -> ${tempFile.absolutePath}")
                 tempFile
             } else {
                 tempFile.delete()
-                LOG.warn("osascript clipboard image read: $output (no image on clipboard)")
+                LOG.info("osascript clipboard image read: $output (no image on clipboard)")
                 null
             }
         } catch (e: Exception) {
