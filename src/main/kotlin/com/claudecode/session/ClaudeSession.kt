@@ -149,6 +149,20 @@ class ClaudeSession(
             .ifBlank { com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS }
         claudeArgs.add("--permission-mode")
         claudeArgs.add(permMode)
+        // ── Model & inference settings ──
+        // Persistent steering text appended to claude's system prompt every
+        // spawn. Empty string skipped so we don't pass an empty arg.
+        val appendSystem = settings.appendSystemPrompt
+        if (appendSystem.isNotBlank()) {
+            claudeArgs.add("--append-system-prompt")
+            claudeArgs.add(appendSystem)
+        }
+        // Hard cap on agentic loop turns. 0 = unlimited (CLI default), skip.
+        val maxTurns = settings.maxAgenticTurns
+        if (maxTurns > 0) {
+            claudeArgs.add("--max-turns")
+            claudeArgs.add(maxTurns.toString())
+        }
         if (sessionId != null) {
             claudeArgs.add("--resume")
             claudeArgs.add(sessionId!!)
@@ -179,6 +193,14 @@ class ClaudeSession(
         }
         pb.environment()["TERM"] = com.claudecode.ClaudeConstants.ENV_TERM_VALUE
         pb.environment()["NO_COLOR"] = "1"
+
+        // Extended thinking budget — env var picked up by claude on Opus /
+        // Sonnet 4.x families. We pass it only when the user has selected
+        // a non-Off level, so the absence is a clean "no extended thinking".
+        com.claudecode.ClaudeConstants.thinkingBudgetTokens(settings.thinkingBudget)?.let { tokens ->
+            pb.environment()["MAX_THINKING_TOKENS"] = tokens.toString()
+            debug("MAX_THINKING_TOKENS=$tokens (level=${settings.thinkingBudget})")
+        }
 
         debug("Starting process...")
         process = pb.start()

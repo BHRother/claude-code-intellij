@@ -30,9 +30,9 @@ is tight. Move power-user knobs to Settings instead.
 
 | Setting | Status | Maps to | UI | Default | Notes |
 |---|---|---|---|---|---|
-| Extended thinking budget | [ ] | env `MAX_THINKING_TOKENS` on spawned `claude` | Dropdown: `Off / Low (1k) / Medium (8k) / High (32k)` | `Off` | Only effective on Opus/Sonnet 4.x. Higher = better reasoning on hard tasks, slower + more $. One-liner — we already pass env per spawn. |
-| Append system prompt | [ ] | `--append-system-prompt <text>` per spawn | Multiline text area (~6 rows) | empty | Power feature: persistent "always be terse", "prefer X over Y", project conventions. |
-| Max agentic turns | [ ] | `--max-turns <n>` per spawn | Number field, blank = unlimited | blank | Useful for "explain this" chats to prevent runaway tool loops. Less useful for active coding. |
+| Extended thinking budget | [x] | env `MAX_THINKING_TOKENS` on spawned `claude` | Dropdown: `Off / Low (1k) / Medium (8k) / High (32k)` | `Off` | Only effective on Opus/Sonnet 4.x. Higher = better reasoning on hard tasks, slower + more $. |
+| Append system prompt | [x] | `--append-system-prompt <text>` per spawn | Multiline text area (~6 rows) | empty | Power feature: persistent "always be terse", "prefer X over Y", project conventions. |
+| Max agentic turns | [x] | `--max-turns <n>` per spawn | Spinner `0..200` (0 = unlimited) | `0` | Useful for "explain this" chats to prevent runaway tool loops. Less useful for active coding. |
 
 ---
 

@@ -23,7 +23,18 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         // so the schema can evolve without an XML migration. cachedModelsAt
         // is epoch millis; 0 = never fetched.
         var cachedModelsJson: String = "",
-        var cachedModelsAt: Long = 0L
+        var cachedModelsAt: Long = 0L,
+        // ── Model & inference (FEATURE_MAP) ──
+        // Extended thinking budget — one of THINKING_OFF/LOW/MEDIUM/HIGH.
+        // Mapped to MAX_THINKING_TOKENS env var on the spawned claude.
+        var thinkingBudget: String = com.claudecode.ClaudeConstants.THINKING_OFF,
+        // Persistent text appended to claude's system prompt on every spawn
+        // via --append-system-prompt. Blank = no append. Power-user lever
+        // for "always be terse", project conventions, persona instructions.
+        var appendSystemPrompt: String = "",
+        // Hard cap on agentic loop turns via --max-turns. 0 = unlimited
+        // (default; CLI behavior).
+        var maxAgenticTurns: Int = 0
     )
 
     private var myState = State()

@@ -164,6 +164,49 @@ class ClaudeSettingsConfigurable : Configurable {
                         .bindIntValue(settings.state::maxSessions)
                 }
             }
+            group("Model & inference") {
+                row("Extended thinking:") {
+                    val levels = com.claudecode.ClaudeConstants.THINKING_BUDGETS
+                    comboBox(levels, friendlyThinkingRenderer())
+                        .bindItem(
+                            {
+                                settings.state.thinkingBudget.takeIf { it in levels }
+                                    ?: com.claudecode.ClaudeConstants.THINKING_OFF
+                            },
+                            { settings.state.thinkingBudget = it ?: com.claudecode.ClaudeConstants.THINKING_OFF }
+                        )
+                        .comment(
+                            "Sets <code>MAX_THINKING_TOKENS</code> on the spawned <code>claude</code> process. " +
+                                "Only Opus / Sonnet 4.x families act on it; other models ignore it. " +
+                                "Higher budgets give better reasoning on hard tasks but cost more and are slower."
+                        )
+                }
+                row("Max agentic turns:") {
+                    // 0 = unlimited; show as a spinner with a 0-allowed range
+                    // and clarify in the comment. JetBrains DSL doesn't have a
+                    // "blank-means-unset" int field, so we use 0 as the sentinel.
+                    spinner(0..200)
+                        .bindIntValue(settings.state::maxAgenticTurns)
+                        .comment(
+                            "Hard cap on the agentic tool-call loop per turn via " +
+                                "<code>--max-turns</code>. Set to <b>0</b> for unlimited (CLI default). " +
+                                "Useful for read-only chats where you don't want runaway tool loops."
+                        )
+                }
+                row("Append system prompt:") {
+                    textArea()
+                        .rows(6)
+                        .bindText(settings.state::appendSystemPrompt)
+                        .resizableColumn()
+                        .align(com.intellij.ui.dsl.builder.Align.FILL)
+                        .comment(
+                            "Persistent text appended to claude's system prompt every spawn via " +
+                                "<code>--append-system-prompt</code>. Use this for project conventions, " +
+                                "preferred tone (\"always be terse\"), or personal coding style notes. " +
+                                "Leave blank for default behavior."
+                        )
+                }
+            }
             group("Permissions") {
                 row("Permission mode:") {
                     val modes = com.claudecode.ClaudeConstants.PERMISSION_MODES
@@ -244,6 +287,17 @@ class ClaudeSettingsConfigurable : Configurable {
             val base = com.claudecode.ClaudeConstants.shortModelLabel(raw)
             val label = if (com.claudecode.models.ModelsRegistry.isDeprecated(raw))
                 "$base (deprecated)" else base
+            return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
+        }
+    }
+
+    private fun friendlyThinkingRenderer(): DefaultListCellRenderer = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?, value: Any?, index: Int,
+            isSelected: Boolean, cellHasFocus: Boolean
+        ): java.awt.Component {
+            val raw = value?.toString() ?: ""
+            val label = com.claudecode.ClaudeConstants.shortThinkingBudgetLabel(raw)
             return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
         }
     }
