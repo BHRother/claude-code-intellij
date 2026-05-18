@@ -178,6 +178,10 @@ class SessionPanel(
                             val key = href.substringAfter("/action/grant-unrestricted/")
                             pendingGrants[key]?.let { switchToUnrestricted(key) }
                         }
+                        href.contains("/action/swap-model/") -> {
+                            val key = href.substringAfter("/action/swap-model/")
+                            pendingGrants[key]?.let { applyModelSwap(key) }
+                        }
                         href.contains("/action/inline-diff/") -> {
                             val diffId = href.substringAfter("/action/inline-diff/")
                             toggleInlineDiff(diffId)
@@ -1224,6 +1228,77 @@ class SessionPanel(
         )
     }
 
+    /**
+     * Returns the (value, displayLabel) list for the model dropdown.
+     * Deprecated catalog entries get a "(deprecated)" suffix so users
+     * notice them before clicking; the underlying value is unchanged so
+     * selecting still works.
+     */
+    private fun buildModelMenuItems(): List<Pair<String, String>> {
+        val constants = com.claudecode.ClaudeConstants
+        val registry = com.claudecode.models.ModelsRegistry
+        return ClaudeSettings.getInstance().getAllModels().map { id ->
+            val base = constants.shortModelLabel(id)
+            val label = if (registry.isDeprecated(id)) "$base (deprecated)" else base
+            id to label
+        }
+    }
+
+    private val warnedDeprecatedModels = mutableSetOf<String>()
+
+    /**
+     * If [modelId] is flagged deprecated by the live catalog, drop a one-time
+     * per-(session, id) banner with a one-click swap to its replacement. Quiet
+     * for active or unknown IDs.
+     */
+    private fun maybeWarnDeprecatedModel(modelId: String) {
+        if (modelId.isBlank()) return
+        val registry = com.claudecode.models.ModelsRegistry
+        if (!registry.isDeprecated(modelId)) return
+        if (!warnedDeprecatedModels.add(modelId)) return
+        val replacement = registry.replacementFor(modelId)
+        val note = registry.noteFor(modelId)
+        val constants = com.claudecode.ClaudeConstants
+
+        val swapLink = if (!replacement.isNullOrBlank()) {
+            val key = "deprecated-swap-${grantCounter++}"
+            pendingGrants[key] = replacement to null   // re-use the grant key plumbing
+            "<br/><a href=\"http://localhost/action/swap-model/$key\">" +
+                "Switch to ${escapeHtml(constants.shortModelLabel(replacement))}" +
+                "</a>"
+        } else ""
+
+        val noteLine = if (!note.isNullOrBlank())
+            "<div style='color: #808080; margin-top: 4px;'>${escapeHtml(note)}</div>" else ""
+
+        appendHtml(
+            "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
+                "<span style='color: #D9B263;'>⚠ Model <b>${escapeHtml(constants.shortModelLabel(modelId))}</b> " +
+                "(<code>${escapeHtml(modelId)}</code>) is marked deprecated in the live catalog.</span>" +
+                noteLine +
+                swapLink +
+                "</div>"
+        )
+    }
+
+    private fun applyModelSwap(key: String) {
+        val (newModel, _) = pendingGrants.remove(key) ?: return
+        session.modelOverride = newModel
+        selectedModelForDivergenceCheck = newModel
+        warnedModelPairs.clear()
+        modelChip.setItems(buildModelMenuItems())
+        modelChip.updateLabel(com.claudecode.ClaudeConstants.shortModelLabel(newModel))
+        modelChip.toolTipText = "Model: " + if (newModel.isBlank()) "CLI default" else newModel
+        appendHtml(
+            "<div class='system-msg' style='margin: 4px 0; padding: 4px 10px; " +
+                "color: #6A8759; font-style: italic;'>" +
+                "✓ Switched to ${escapeHtml(com.claudecode.ClaudeConstants.shortModelLabel(newModel))} " +
+                "for this session." +
+                "</div>"
+        )
+    }
+
     private fun maybeShowPermissionHint(text: String) {
         if (permissionHintShown) return
         if (!looksLikePermissionBlocked(text)) return
@@ -1504,7 +1579,10 @@ class SessionPanel(
         selectedModelForDivergenceCheck = initialModel
         modelChip = ChipDropdown(constants.shortModelLabel(initialModel), smallFont).apply {
             toolTipText = "Model — click to switch (per-session)"
-            setItems(settings.getAllModels().map { it to constants.shortModelLabel(it) })
+            // Use a provider so the dropdown re-reads the current catalog
+            // each time the popup opens — Refresh in Settings (or a
+            // background TTL refresh) lands automatically next click.
+            setItemsProvider { buildModelMenuItems() }
             onPick { value ->
                 session.modelOverride = value
                 selectedModelForDivergenceCheck = value
@@ -1514,8 +1592,12 @@ class SessionPanel(
                 updateLabel(constants.shortModelLabel(value))
                 toolTipText = "Model: " + if (value.isBlank()) "CLI default" else value
                 maybeShowChipScopeHint()
+                maybeWarnDeprecatedModel(value)
             }
         }
+        // If the user's persisted model is already deprecated, surface a
+        // banner immediately so they don't get stuck on a sunset entry.
+        maybeWarnDeprecatedModel(initialModel)
 
         // Permission chip — three modes that make sense in -p (non-interactive).
         val initialPerm = state.permissionMode

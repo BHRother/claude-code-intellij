@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-05-18",
+  "source": "bundled-fallback",
+  "models": [
+    {
+      "id": "claude-opus-4-7",
+      "name": "Opus 4.7",
+      "deprecated": false
+    },
+    {
+      "id": "claude-opus-4-6",
+      "name": "Opus 4.6",
+      "deprecated": false
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "name": "Sonnet 4.6",
+      "deprecated": false
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "name": "Haiku 4.5",
+      "deprecated": false
+    },
+    {
+      "id": "claude-sonnet-4-5-20250514",
+      "name": "Sonnet 4.5",
+      "deprecated": true,
+      "note": "Earlier dated Sonnet release; superseded by Sonnet 4.6."
+    }
+  ]
+}

@@ -32,6 +32,10 @@ class ChipDropdown(
     private val pickHandlers = mutableListOf<(String) -> Unit>()
     // (value, displayLabel) — value goes back to onPick; displayLabel is what's drawn in the menu.
     private var items: List<Pair<String, String>> = emptyList()
+    // Optional provider for items computed at show-time (e.g. when the model
+    // catalog refreshes in the background and the dropdown should reflect
+    // the new list without rebuilding the chip).
+    private var itemsProvider: (() -> List<Pair<String, String>>)? = null
     @Volatile private var hover = false
 
     init {
@@ -58,6 +62,16 @@ class ChipDropdown(
     /** Set menu contents. [pairs] = list of (value, displayLabel). */
     fun setItems(pairs: List<Pair<String, String>>) {
         items = pairs
+    }
+
+    /**
+     * Register a provider that yields fresh items every time the popup
+     * opens. Lets the dropdown reflect background state changes (e.g. a
+     * just-refreshed model catalog) without rebuilding the chip itself.
+     */
+    fun setItemsProvider(provider: () -> List<Pair<String, String>>) {
+        itemsProvider = provider
+        items = runCatching { provider() }.getOrElse { items }
     }
 
     fun onPick(handler: (String) -> Unit) {
@@ -88,6 +102,11 @@ class ChipDropdown(
     }
 
     private fun showPopup() {
+        // Pull a fresh snapshot if a provider was registered — this is what
+        // makes the dropdown auto-reflect a background catalog refresh.
+        itemsProvider?.let { provider ->
+            runCatching { provider() }.onSuccess { items = it }
+        }
         if (items.isEmpty()) return
         val popup = JPopupMenu()
         items.forEach { (value, label) ->

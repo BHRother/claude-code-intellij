@@ -7,7 +7,9 @@ import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.dsl.builder.*
+import javax.swing.DefaultComboBoxModel
 import javax.swing.DefaultListCellRenderer
+import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JTextField
@@ -44,21 +46,113 @@ class ClaudeSettingsConfigurable : Configurable {
                 }
                 row("Model:") {
                     val allModels = settings.getAllModels()
+                    var modelComboRef: JComboBox<String>? = null
+                    // Non-editable: users pick from catalog entries (or the
+                    // empty "Default", which lets Claude Code choose). Typing
+                    // arbitrary IDs has historically caused typos that fail
+                    // silently in the CLI; selecting Default covers any
+                    // "I want whatever Claude defaults to" case.
+                    @Suppress("UNCHECKED_CAST")
                     comboBox(allModels, friendlyModelRenderer())
                         .bindItem(
                             { settings.state.model },
                             { settings.state.model = it ?: "" }
                         )
-                        .applyToComponent { isEditable = true }
-                        .validationOnApply {
-                            val text = (it.editor.item as? String)?.trim() ?: ""
-                            if (text.isNotBlank() && !text.startsWith("claude-")) {
-                                warning("Model ID typically starts with 'claude-' (e.g., claude-sonnet-4-6). Save anyway?")
-                            } else {
-                                null
+                        .applyToComponent {
+                            isEditable = false
+                            modelComboRef = this as JComboBox<String>
+                        }
+                    button("Refresh catalog") {
+                        // Capture the Settings dialog's modality state NOW,
+                        // while we're on the EDT inside the modal Settings
+                        // dialog. Without this, invokeLater on the response
+                        // would default to NON_MODAL — which lives BENEATH
+                        // the Settings dialog in IntelliJ's modal stack, so
+                        // the confirmation pops behind. Re-using the same
+                        // modality keeps the Messages dialog *above* it.
+                        val parent: java.awt.Component = modelComboRef ?: panel!!
+                        val modality = com.intellij.openapi.application.ModalityState.stateForComponent(parent)
+                        // Force a re-fetch of the remote models JSON. After
+                        // success, rebuild the combo's model in place so the
+                        // user sees new entries without reopening Settings.
+                        com.claudecode.models.ModelsRegistry.invalidateCache()
+                        com.claudecode.models.ModelsRegistry.refreshAsync { ok ->
+                            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater({
+                                if (ok) {
+                                    val combo = modelComboRef
+                                    if (combo != null) {
+                                        val previouslySelected = combo.selectedItem as? String ?: ""
+                                        val updated = settings.getAllModels()
+                                        combo.model = DefaultComboBoxModel(updated.toTypedArray())
+                                        if (previouslySelected in updated) {
+                                            combo.selectedItem = previouslySelected
+                                        }
+                                    }
+                                }
+                                if (ok) {
+                                    Messages.showInfoMessage(
+                                        parent,
+                                        "Model catalog refreshed from the remote source.",
+                                        "Claude Code — Models"
+                                    )
+                                } else {
+                                    Messages.showInfoMessage(
+                                        parent,
+                                        "Could not reach the remote catalog. Using the previously cached / bundled list.",
+                                        "Claude Code — Models"
+                                    )
+                                }
+                            }, modality)
+                        }
+                    }
+                    button("Clear custom history") {
+                        // Wipes the persisted list of model IDs Claude has
+                        // returned that aren't in the catalog. Refreshes the
+                        // combo in place so the user sees the change.
+                        val parent: java.awt.Component = modelComboRef ?: panel!!
+                        val count = settings.getCustomModelsList().size
+                        if (count == 0) {
+                            Messages.showInfoMessage(
+                                parent,
+                                "No custom model entries to clear.",
+                                "Claude Code — Models"
+                            )
+                        } else {
+                            val confirm = Messages.showYesNoDialog(
+                                parent,
+                                "Remove $count custom model entries from the dropdown?\n\n" +
+                                    "Catalog models (Opus, Sonnet, Haiku, …) are unaffected. " +
+                                    "Custom entries reappear automatically the next time Claude responds with them.",
+                                "Claude Code — Clear Custom Models",
+                                Messages.getQuestionIcon()
+                            )
+                            if (confirm == Messages.YES) {
+                                settings.clearCustomModels()
+                                val combo = modelComboRef
+                                if (combo != null) {
+                                    val previouslySelected = combo.selectedItem as? String ?: ""
+                                    val updated = settings.getAllModels()
+                                    combo.model = DefaultComboBoxModel(updated.toTypedArray())
+                                    if (previouslySelected in updated) {
+                                        combo.selectedItem = previouslySelected
+                                    }
+                                }
+                                Messages.showInfoMessage(
+                                    parent,
+                                    "Cleared $count custom model entries.",
+                                    "Claude Code — Models"
+                                )
                             }
                         }
-                        .comment("Leave empty for CLI default. Type any model ID — known IDs display as short names (Opus 4.7, etc.).")
+                    }
+                }
+                row("") {
+                    comment(
+                        "Pick a catalog model or <b>Default</b> (lets Claude Code choose). The list " +
+                            "refreshes every 24h from the project's published catalog; deprecated entries " +
+                            "appear with a '(deprecated)' suffix and a one-click swap in chat. Any model " +
+                            "Claude has already responded with this session is also offered."
+                    )
                 }
                 row("Font size:") {
                     spinner(8..32)
@@ -147,7 +241,9 @@ class ClaudeSettingsConfigurable : Configurable {
             isSelected: Boolean, cellHasFocus: Boolean
         ): java.awt.Component {
             val raw = value?.toString() ?: ""
-            val label = com.claudecode.ClaudeConstants.shortModelLabel(raw)
+            val base = com.claudecode.ClaudeConstants.shortModelLabel(raw)
+            val label = if (com.claudecode.models.ModelsRegistry.isDeprecated(raw))
+                "$base (deprecated)" else base
             return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
         }
     }

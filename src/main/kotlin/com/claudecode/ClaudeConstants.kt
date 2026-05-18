@@ -16,6 +16,17 @@ object ClaudeConstants {
 
     val AVAILABLE_MODELS = listOf("", MODEL_OPUS_47, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU, MODEL_SONNET_PREV)
 
+    // ───────── Remote model catalog ─────────
+    // The plugin fetches a JSON list of currently-supported model IDs from a
+    // public GitHub Gist so we can ship new models / deprecate retired ones
+    // without a plugin release. Schema: see models/ModelsCatalog.kt and the
+    // bundled fallback at resources/claude-code-intellij-models.json.
+    //
+    const val MODELS_CATALOG_URL =
+        "https://gist.githubusercontent.com/BHRother/0216a8b6f8eef1245db171638f6cf2ce/raw/claude-code-intellij-models.json"
+    /** Cache TTL for the remote catalog. After this, the next access triggers a background refresh. */
+    const val MODELS_CATALOG_TTL_MS: Long = 24L * 60L * 60L * 1000L
+
     // Maps to the CLI's --permission-mode flag. We expose only the three modes
     // that make sense in -p (non-interactive) mode. The CLI's "default" /
     // "dontAsk" / "auto" assume an interactive terminal that doesn't exist in
@@ -59,16 +70,26 @@ object ClaudeConstants {
 
     /**
      * Friendly model name for chip-row dropdown. Empty string → "Default"
-     * (CLI's own choice). Known IDs collapse to "Opus 4.7" etc.; unknown
-     * IDs (custom models) display as-is.
+     * (CLI's own choice). Known IDs collapse to their friendly label from
+     * the live catalog (which the plugin refreshes from the published
+     * Gist); unknown IDs (custom models) display as-is.
      */
-    fun shortModelLabel(model: String): String = when (model) {
-        "" -> "Default"
-        MODEL_OPUS_47 -> "Opus 4.7"
-        MODEL_OPUS -> "Opus 4.6"
-        MODEL_SONNET -> "Sonnet 4.6"
-        MODEL_HAIKU -> "Haiku 4.5"
-        MODEL_SONNET_PREV -> "Sonnet 4.5"
-        else -> model
+    fun shortModelLabel(model: String): String {
+        if (model.isBlank()) return "Default"
+        // Live catalog first — picks up renames / new entries shipped via
+        // the remote JSON without a plugin release.
+        com.claudecode.models.ModelsRegistry.catalog().findById(model)?.let {
+            return it.name
+        }
+        // Fallback to hardcoded short names for the original ship list,
+        // in case the bundled JSON failed to load entirely.
+        return when (model) {
+            MODEL_OPUS_47 -> "Opus 4.7"
+            MODEL_OPUS -> "Opus 4.6"
+            MODEL_SONNET -> "Sonnet 4.6"
+            MODEL_HAIKU -> "Haiku 4.5"
+            MODEL_SONNET_PREV -> "Sonnet 4.5"
+            else -> model
+        }
     }
 }
