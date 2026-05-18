@@ -131,7 +131,7 @@ class WelcomePanel(
                     <li><span class='shortcut'>Cmd+Alt+K / Ctrl+Alt+K</span> — Edit with Claude (in any editor)</li>
                     <li><span class='shortcut'>Alt+Enter</span> — Fix with Claude (on errors/warnings)</li>
                     <li><span class='shortcut'>Enter</span> / <span class='shortcut'>Shift+Enter</span> — send / new line in chat input</li>
-                    <li><span class='shortcut'>Escape</span> or <span class='shortcut'>Ctrl+C / Cmd+C</span> twice — stop current request</li>
+                    <li><span class='shortcut'>Escape</span> — stop current request</li>
                 </ul>
             </div>
 

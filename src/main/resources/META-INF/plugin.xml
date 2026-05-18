@@ -51,7 +51,7 @@
     <ul>
         <li>Editable model selector: type any Claude model ID; remembers models seen in past sessions</li>
         <li>Keyboard shortcuts: <b>Cmd+Shift+I</b> to toggle the chat panel, <b>Cmd+Alt+K</b> for inline edit (Ctrl variants on Windows/Linux)</li>
-        <li>Stop requests with Escape or double Ctrl+C / Cmd+C</li>
+        <li>Stop requests with Escape</li>
         <li>Permission mode: <b>acceptEdits</b> (file edits OK, shell blocked), <b>bypassPermissions</b> (allow all), or <b>plan</b> (read-only) — maps to the CLI's <code>--permission-mode</code></li>
         <li>Project tree auto-refreshes when Claude creates, modifies, or deletes files</li>
         <li>Cost tracking per response</li>

@@ -33,7 +33,6 @@ Works from both the editor (selected code or full file) and the project tree (fi
 | `Enter` | Send message |
 | `Shift+Enter` | New line |
 | `Escape` | Stop current request |
-| `Cmd+C` / `Ctrl+C` (×2) | Stop current request |
 
 ### Settings
 Configurable via **Settings → Tools → Claude Code**:
