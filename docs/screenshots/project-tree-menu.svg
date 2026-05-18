@@ -1,12 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="520" height="420" font-family="'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="460" font-family="'SF Pro Text', 'Segoe UI', system-ui, sans-serif" font-size="13">
   <defs>
     <filter id="shadow" x="-5%" y="-5%" width="115%" height="115%">
       <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#000" flood-opacity="0.5"/>
     </filter>
   </defs>
 
-  <!-- Project tree background -->
-  <rect width="220" height="420" fill="#1E1F22"/>
+  <!-- Project tree pane -->
+  <rect width="220" height="460" fill="#1E1F22"/>
   <text x="12" y="22" fill="#BCBEC4" font-size="12" font-weight="bold">Project</text>
 
   <!-- Tree items -->
@@ -14,55 +14,61 @@
   <text x="32" y="72" fill="#808080" font-size="12">▼ main</text>
   <text x="52" y="94" fill="#808080" font-size="12">▼ java</text>
 
-  <!-- Selected file -->
+  <!-- Selected folder -->
   <rect x="4" y="100" width="212" height="22" rx="3" fill="#2E436E"/>
-  <text x="72" y="116" fill="#BCBEC4" font-size="12">📄 Main.java</text>
+  <text x="72" y="116" fill="#BCBEC4" font-size="12">📁 service</text>
 
-  <text x="72" y="138" fill="#808080" font-size="12">📄 Utils.java</text>
-  <text x="52" y="160" fill="#808080" font-size="12">▶ resources</text>
-  <text x="32" y="182" fill="#808080" font-size="12">▼ test</text>
-  <text x="52" y="204" fill="#808080" font-size="12">▼ java</text>
-  <text x="72" y="226" fill="#808080" font-size="12">📄 MainTest.java</text>
+  <text x="72" y="138" fill="#808080" font-size="12">📄 Main.java</text>
+  <text x="72" y="160" fill="#808080" font-size="12">📄 Utils.java</text>
+  <text x="52" y="182" fill="#808080" font-size="12">▶ resources</text>
+  <text x="32" y="204" fill="#808080" font-size="12">▼ test</text>
 
-  <!-- Context menu -->
-  <rect x="160" y="90" width="300" height="310" rx="8" fill="#2B2D30" stroke="#3C3F41" stroke-width="1" filter="url(#shadow)"/>
+  <!-- Context menu (primary) -->
+  <rect x="160" y="90" width="320" height="280" rx="8" fill="#2B2D30" stroke="#3C3F41" stroke-width="1" filter="url(#shadow)"/>
 
-  <!-- Regular items -->
+  <!-- Regular items (dimmed) -->
   <text x="180" y="118" fill="#808080" font-size="12">New</text>
   <text x="180" y="142" fill="#808080" font-size="12">Cut</text>
   <text x="180" y="166" fill="#808080" font-size="12">Copy</text>
-  <text x="180" y="190" fill="#808080" font-size="12">Copy Path/Reference...</text>
+  <text x="180" y="190" fill="#808080" font-size="12">Copy Path/Reference…</text>
 
-  <!-- Separator -->
-  <line x1="170" y1="200" x2="450" y2="200" stroke="#3C3F41" stroke-width="1"/>
+  <line x1="170" y1="200" x2="470" y2="200" stroke="#3C3F41" stroke-width="1"/>
 
   <text x="180" y="220" fill="#808080" font-size="12">Refactor</text>
   <text x="180" y="244" fill="#808080" font-size="12">Open In</text>
 
-  <!-- Separator -->
-  <line x1="170" y1="255" x2="450" y2="255" stroke="#3C3F41" stroke-width="1"/>
+  <line x1="170" y1="255" x2="470" y2="255" stroke="#3C3F41" stroke-width="1"/>
 
   <!-- Claude Code submenu - highlighted -->
-  <rect x="165" y="262" width="290" height="26" rx="4" fill="#2E436E"/>
-
-  <!-- Claude icon -->
+  <rect x="165" y="262" width="310" height="26" rx="4" fill="#2E436E"/>
   <circle cx="182" cy="275" r="8" fill="#D97757"/>
   <text x="178" y="279" fill="#1E1F22" font-size="10" font-weight="bold">C</text>
-
   <text x="198" y="279" fill="#BCBEC4" font-size="13" font-weight="500">Claude Code</text>
-  <text x="432" y="279" fill="#808080" font-size="11">▶</text>
+  <text x="450" y="279" fill="#808080" font-size="11">▶</text>
 
-  <!-- Submenu -->
-  <rect x="250" y="290" width="260" height="105" rx="8" fill="#2B2D30" stroke="#3C3F41" stroke-width="1" filter="url(#shadow)"/>
+  <text x="180" y="310" fill="#808080" font-size="12">Delete…</text>
+  <text x="180" y="334" fill="#808080" font-size="12">Open in Terminal</text>
+  <text x="180" y="358" fill="#808080" font-size="12">Local History</text>
 
-  <rect x="255" y="298" width="250" height="26" rx="4" fill="#2E436E"/>
-  <text x="270" y="315" fill="#BCBEC4" font-size="12.5">Explain with Claude</text>
+  <!-- Claude Code submenu popup -->
+  <rect x="280" y="282" width="270" height="170" rx="8" fill="#2B2D30" stroke="#3C3F41" stroke-width="1" filter="url(#shadow)"/>
 
-  <text x="270" y="343" fill="#BCBEC4" font-size="12.5">Generate Tests with Claude</text>
+  <!-- Highlighted first item -->
+  <rect x="285" y="288" width="260" height="24" rx="4" fill="#2E436E"/>
+  <text x="300" y="304" fill="#BCBEC4" font-size="12.5">Explain Folder with Claude</text>
 
-  <text x="270" y="371" fill="#BCBEC4" font-size="12.5">Refactor with Claude</text>
+  <text x="300" y="328" fill="#BCBEC4" font-size="12.5">Generate Tests for Folder</text>
 
-  <!-- More items below Claude -->
-  <line x1="170" y1="295" x2="240" y2="295" stroke="#3C3F41" stroke-width="1"/>
-  <text x="180" y="315" fill="#808080" font-size="12">Delete...</text>
+  <line x1="290" y1="338" x2="540" y2="338" stroke="#3C3F41" stroke-width="0.5"/>
+
+  <text x="300" y="358" fill="#BCBEC4" font-size="12.5">Send Folder to Claude</text>
+
+  <line x1="290" y1="368" x2="540" y2="368" stroke="#3C3F41" stroke-width="0.5"/>
+
+  <text x="300" y="388" fill="#BCBEC4" font-size="12.5">New Session Here…</text>
+
+  <line x1="290" y1="398" x2="540" y2="398" stroke="#3C3F41" stroke-width="0.5"/>
+
+  <text x="300" y="418" fill="#808080" font-size="11" font-style="italic">Single-file actions appear</text>
+  <text x="300" y="434" fill="#808080" font-size="11" font-style="italic">when right-clicking a file.</text>
 </svg>
