@@ -184,9 +184,6 @@ class SessionPanel(
                             val key = href.substringAfter("/action/swap-model/")
                             pendingGrants[key]?.let { applyModelSwap(key) }
                         }
-                        href.contains("/action/load-history") -> {
-                            loadFullHistory()
-                        }
                         href.contains("/action/inline-diff/") -> {
                             val diffId = href.substringAfter("/action/inline-diff/")
                             toggleInlineDiff(diffId)
@@ -397,7 +394,10 @@ class SessionPanel(
         session.addListener(this)
 
         if (session.isResumed) {
-            appendHtml(buildResumePreambleHtml())
+            // Initial header — kick the async JSONL load right after so the
+            // full transcript replaces this stub once parsed.
+            appendHtml(buildResumeHeaderHtml(loading = true))
+            loadAndRenderHistory()
         } else {
             appendHtml("<div class='system-msg'>Claude Code session started. Working directory: ${escapeHtml(session.workingDirectory)}</div>")
         }
@@ -1048,18 +1048,6 @@ class SessionPanel(
         }
     }
 
-    /**
-     * HTML preamble shown at the top of a resumed chat. Surfaces the
-     * stored last-message tail so the user has visual context for where
-     * they left off, without pretending we have the full history (Claude
-     * does — that's why --resume works).
-     */
-    private fun buildResumePreambleHtml(): String =
-        buildResumePreambleHtml(
-            messages = recentEntryForCurrentSession()?.lastMessages.orEmpty(),
-            showLoadFullLink = !fullHistoryAttempted,
-        )
-
     /** Look up the persisted recent-chats entry for the current Claude session, if any. */
     private fun recentEntryForCurrentSession(): com.claudecode.history.RecentSession? {
         val claudeId = session.claudeSessionId ?: return null
@@ -1068,80 +1056,52 @@ class SessionPanel(
             .firstOrNull { it.id == claudeId }
     }
 
-    private fun buildResumePreambleHtml(
-        messages: List<com.claudecode.history.RecentMessage>,
-        showLoadFullLink: Boolean,
+    /**
+     * Builds the resume header (one line). Used both as the initial stub
+     * during the async JSONL load and as the prefix above the rendered
+     * full transcript. The single wrapper div carries [RESUME_PREAMBLE_ID]
+     * so the async result can swap header + transcript together via
+     * HTMLDocument.setOuterHTML.
+     */
+    private fun buildResumeHeaderHtml(
+        loading: Boolean = false,
+        loadedCount: Int? = null,
+        unavailableReason: String? = null,
     ): String {
         val entry = recentEntryForCurrentSession()
         val ageStr = entry?.let { humanizeAgo(System.currentTimeMillis() - it.lastUsedAt) }
         val countStr = entry?.let { "${it.messageCount} prior message${if (it.messageCount == 1) "" else "s"}" }
 
         val sb = StringBuilder()
-        // Single OUTER wrapper carries the id so setOuterHTML on it swaps
-        // header + load link + tail together. The old shape kept the id
-        // only on the header, leaving the tail div behind after replace.
         sb.append("<div id='$RESUME_PREAMBLE_ID'>")
-
-        // Header
         sb.append("<div class='system-msg' style='color: #808080; font-style: italic;'>")
         sb.append("↻ Resumed session")
         if (ageStr != null) sb.append(" from $ageStr")
         if (countStr != null) sb.append(" — $countStr")
-        sb.append(". Claude still has the full conversation; the tail below is just so you can see where you left off.")
+        sb.append(".")
+        when {
+            loading -> sb.append(" <span style='color: #606060;'>Loading transcript…</span>")
+            loadedCount != null -> sb.append(" <span style='color: #606060;'>$loadedCount turn")
+                .append(if (loadedCount == 1) "" else "s").append(" rendered below.</span>")
+            unavailableReason != null -> sb.append(" <span style='color: #606060;'>")
+                .append(escapeHtml(unavailableReason)).append("</span>")
+        }
         sb.append("</div>")
-
-        // Load link on its own line — easier to spot than inline with the header.
-        // Free-of-charge: reads the local JSONL Claude itself wrote — no API
-        // round-trip, no token cost. We hide the link once the load has been
-        // attempted (success or failure).
-        if (showLoadFullLink) {
-            sb.append("<div class='system-msg' style='margin-top: 2px; color: #808080;'>")
-            sb.append("<a href=\"http://localhost/action/load-history\">Load full history</a>")
-            sb.append(" <span style='color: #606060; font-size: 11px;'>(local file, no cost)</span>")
-            sb.append("</div>")
-        }
-
-        // Cached tail (truncated 5-message preview).
-        if (messages.isNotEmpty()) {
-            sb.append("<div style='margin: 4px 0 8px 10px; border-left: 2px solid #3C3F41; padding-left: 10px;'>")
-            messages.forEach { m ->
-                val who = if (m.role == "assistant") "Claude" else "You"
-                val color = if (m.role == "assistant") "#BCBEC4" else "#6897BB"
-                sb.append("<div style='color: #707070; margin-top: 4px;'>")
-                sb.append("<span style='color: $color;'>$who:</span> ")
-                sb.append(escapeHtml(m.text))
-                sb.append("</div>")
-            }
-            sb.append("</div>")
-        }
-
-        sb.append("</div>")  // close outer wrapper
+        sb.append("</div>")
         return sb.toString()
     }
 
-    /** One-shot: avoid offering / re-running the full-history load more than once per session. */
-    private var fullHistoryAttempted = false
-
     /**
-     * Asynchronously read the full conversation from Claude Code's local
-     * JSONL file and swap the preamble in place. Tool calls / file edits /
-     * thinking blocks are skipped — text turns only.
-     *
-     * Also extracts the permission mode the session was last running with,
-     * and applies it to *this session only* via the chip override so the
-     * resumed chat behaves like the original. Global default is untouched.
-     *
-     * Failure path: drop the link, leave the existing 5-message tail in
-     * place, log a warning. The user can keep chatting normally.
+     * Async-loads the full transcript from Claude Code's local JSONL the
+     * first time a resumed chat opens. No "Load" button — we always load
+     * eagerly (matches Cursor's behavior). On failure (file missing /
+     * unreadable) the header swaps to a "history unavailable" line and
+     * the chat keeps working normally.
      */
-    private fun loadFullHistory() {
-        if (fullHistoryAttempted) return
-        fullHistoryAttempted = true
-
+    private fun loadAndRenderHistory() {
         val claudeId = session.claudeSessionId
         if (claudeId.isNullOrBlank()) {
-            // No session ID yet — can't locate file. Just rebuild without link.
-            replaceResumePreamble(buildResumePreambleHtml())
+            replaceResumePreamble(buildResumeHeaderHtml(unavailableReason = "No session ID — cannot resume."))
             return
         }
         val workDir = session.workingDirectory
@@ -1152,33 +1112,17 @@ class SessionPanel(
                 com.claudecode.history.ClaudeSessionFile.readTextOnly(file)
             } else {
                 com.claudecode.history.ClaudeSessionFile.SessionContents(
-                    emptyList(), null, "Local JSONL not found under ~/.claude/projects/."
+                    emptyList(), null, "Local transcript not found under ~/.claude/projects/."
                 )
             }
             ApplicationManager.getApplication().invokeLater {
                 if (contents.error != null || contents.messages.isEmpty()) {
-                    // Failure — drop the link, leave the existing tail.
-                    // Don't surface an error banner; the link disappearing
-                    // is enough signal, and the chat keeps working.
-                    replaceResumePreamble(buildResumePreambleHtml())
+                    replaceResumePreamble(
+                        buildResumeHeaderHtml(unavailableReason = "Full history unavailable.")
+                    )
                     return@invokeLater
                 }
-
-                // Render the full transcript as proper chat blocks (same
-                // styling as live messages — `.user-msg`, markdown for
-                // assistant, code blocks etc.). Closes with an explicit
-                // end-of-history separator so the boundary between the
-                // resumed transcript and any new turn is unambiguous.
                 replaceResumePreamble(renderFullHistoryHtml(contents.messages))
-
-                // NB: we deliberately keep the cached 5-message tail in
-                // RecentSessionsStore. Clearing it would make the *next*
-                // reopen of this session show only the header + Load link
-                // with no quick preview — which costs a click and a JSONL
-                // parse just to see "where did I leave off". The cache
-                // is ~2.5KB per session and serves a different purpose
-                // (fast quick-glance) than the JSONL (full history on
-                // demand), so the duplication is intentional.
 
                 // Apply the historical permission mode for this session only.
                 // Doesn't touch global settings — chip override scope.
@@ -1203,16 +1147,16 @@ class SessionPanel(
      * turn is visually clear. Historical messages don't get copy/edit
      * action links — they're context, not actionable.
      */
-    private fun renderFullHistoryHtml(messages: List<com.claudecode.history.RecentMessage>): String {
+    private fun renderFullHistoryHtml(messages: List<com.claudecode.history.ClaudeSessionFile.HistoricalMessage>): String {
         val sb = StringBuilder()
-        // Same single-wrapper pattern as buildResumePreambleHtml so a future
-        // re-render (or rollback) swaps everything via one setOuterHTML.
+        // Same single-wrapper pattern as buildResumeHeaderHtml so the
+        // async load (or any re-render) swaps everything via one setOuterHTML.
         sb.append("<div id='$RESUME_PREAMBLE_ID'>")
 
-        sb.append("<div class='system-msg' style='color: #808080; font-style: italic;'>")
-        sb.append("↻ Resumed session — full local history loaded (${messages.size} message")
-        sb.append(if (messages.size == 1) "" else "s").append(").")
-        sb.append("</div>")
+        // Header is the same shape as the loading stub, with a final count.
+        sb.append(buildResumeHeaderHtml(loadedCount = messages.size)
+            .removePrefix("<div id='$RESUME_PREAMBLE_ID'>")
+            .removeSuffix("</div>"))
 
         messages.forEach { m ->
             when (m.role) {
@@ -1285,17 +1229,13 @@ class SessionPanel(
 
     /**
      * Snapshot the current session into [com.claudecode.history.RecentSessionsStore]
-     * so it appears in the "Recent" surface (chip / panel / etc.) across
-     * IDE restarts. Tail of last messages is purely informational; Claude
-     * owns the full conversation.
+     * so it appears in the "Recent" dropdown across IDE restarts. Metadata
+     * only — message content is sourced on demand from Claude's own JSONL
+     * transcript (see [com.claudecode.history.ClaudeSessionFile]).
      */
     private fun persistRecentSnapshot() {
         val claudeId = session.claudeSessionId ?: return
         val now = System.currentTimeMillis()
-        val tail = session.messages.takeLast(com.claudecode.history.RecentSessionsStore.MAX_MESSAGES)
-            .map { com.claudecode.history.RecentMessage(role = it.role, text = it.content) }
-        val truncated = com.claudecode.history.RecentSessionsStore.truncateMessages(tail)
-
         // Preserve createdAt across touches by looking up any existing entry.
         val existing = com.claudecode.history.RecentSessionsStore
             .recentForProject(session.workingDirectory)
@@ -1311,7 +1251,6 @@ class SessionPanel(
                 createdAt = createdAt,
                 lastUsedAt = now,
                 messageCount = session.messages.size,
-                lastMessages = truncated,
             )
         )
     }

@@ -24,16 +24,14 @@ object RecentSessionsStore {
 
     // Tunables — exposed as constants so consumers can document them
     // without depending on the store.
-    const val MAX_PER_PROJECT = 5
+    const val MAX_PER_PROJECT = 10
     const val RETENTION_DAYS = 30L
-    const val MAX_MESSAGES = 5
-    const val MAX_MESSAGE_CHARS = 500
 
     private val LOG = Logger.getInstance(RecentSessionsStore::class.java)
     private val GSON = GsonBuilder().setPrettyPrinting().create()
 
     @Volatile private var loaded = false
-    // Project path → ordered list of sessions (most recent first after sort).
+    // Project path → an ordered list of sessions (most recent first after sort).
     private val data: MutableMap<String, MutableList<RecentSession>> = HashMap()
     private val lock = Any()
 
@@ -54,44 +52,19 @@ object RecentSessionsStore {
     /**
      * Upsert a session. Existing entry with the same [RecentSession.id] is
      * replaced; the list is then capped to [MAX_PER_PROJECT] by recency.
-     * Message text in [session] should already be truncated by the caller
-     * via [truncateMessages] — the store applies the cap defensively too.
      */
     fun touch(projectPath: String, session: RecentSession) {
         if (projectPath.isBlank() || session.id.isBlank()) return
         ensureLoaded()
-        val normalized = session.copy(lastMessages = truncateMessages(session.lastMessages))
         synchronized(lock) {
             val list = data.getOrPut(projectPath) { mutableListOf() }
-            list.removeAll { it.id == normalized.id }
-            list.add(normalized)
+            list.removeAll { it.id == session.id }
+            list.add(session)
             // Cap by recency — drop oldest beyond MAX_PER_PROJECT.
             val capped = list.sortedByDescending { it.lastUsedAt }.take(MAX_PER_PROJECT)
             data[projectPath] = capped.toMutableList()
         }
         scheduleSave()
-    }
-
-    /**
-     * Wipes the cached [RecentSession.lastMessages] tail for a single entry,
-     * leaving the entry itself in place (id, name, lastUsedAt, etc.).
-     * Called after a successful "Load full history" pull from Claude's
-     * JSONL — that file is authoritative, so the local tail is redundant
-     * until the next live turn repopulates it.
-     */
-    fun clearMessagesFor(projectPath: String, sessionId: String) {
-        ensureLoaded()
-        var changed = false
-        synchronized(lock) {
-            val list = data[projectPath] ?: return
-            val idx = list.indexOfFirst { it.id == sessionId }
-            if (idx < 0) return
-            val existing = list[idx]
-            if (existing.lastMessages.isEmpty()) return
-            list[idx] = existing.copy(lastMessages = emptyList())
-            changed = true
-        }
-        if (changed) scheduleSave()
     }
 
     fun remove(projectPath: String, sessionId: String) {
@@ -121,15 +94,6 @@ object RecentSessionsStore {
             }
         }
         if (changed) scheduleSave()
-    }
-
-    /** Truncate per-message text and cap message count. Pure; used by callers building a [RecentSession]. */
-    fun truncateMessages(messages: List<RecentMessage>): List<RecentMessage> {
-        if (messages.isEmpty()) return emptyList()
-        return messages.takeLast(MAX_MESSAGES).map {
-            if (it.text.length <= MAX_MESSAGE_CHARS) it
-            else it.copy(text = it.text.take(MAX_MESSAGE_CHARS - 1) + "…")
-        }
     }
 
     // ─────────────── internals ───────────────
@@ -165,13 +129,6 @@ object RecentSessionsStore {
             for (el in arr) {
                 val obj = el.asJsonObject
                 try {
-                    val msgs = obj.getAsJsonArray("lastMessages")?.map { mEl ->
-                        val mObj = mEl.asJsonObject
-                        RecentMessage(
-                            role = mObj.get("role")?.asString ?: "user",
-                            text = mObj.get("text")?.asString ?: "",
-                        )
-                    } ?: emptyList()
                     list.add(
                         RecentSession(
                             id = obj.get("id").asString,
@@ -179,8 +136,10 @@ object RecentSessionsStore {
                             workingDirectory = obj.get("workingDirectory").asString,
                             createdAt = obj.get("createdAt").asLong,
                             lastUsedAt = obj.get("lastUsedAt").asLong,
-                            messageCount = obj.get("messageCount")?.asInt ?: msgs.size,
-                            lastMessages = msgs,
+                            // Older files persisted by previous plugin builds
+                            // included a lastMessages array; we read only the
+                            // count if present, ignore the rest.
+                            messageCount = obj.get("messageCount")?.asInt ?: 0,
                         )
                     )
                 } catch (_: Exception) {

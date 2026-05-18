@@ -31,8 +31,18 @@ object ClaudeSessionFile {
 
     private val LOG = Logger.getInstance(ClaudeSessionFile::class.java)
 
+    /**
+     * One parsed user/assistant text turn from Claude's local JSONL. Tool
+     * calls, tool results, file snapshots, thinking blocks, and image
+     * blocks are excluded — text only.
+     */
+    data class HistoricalMessage(
+        val role: String,   // "user" or "assistant"
+        val text: String,
+    )
+
     data class SessionContents(
-        val messages: List<RecentMessage>,
+        val messages: List<HistoricalMessage>,
         val permissionMode: String?,
         val error: String? = null,
     )
@@ -76,7 +86,7 @@ object ClaudeSessionFile {
         if (!file.isFile) {
             return SessionContents(emptyList(), null, "File not found")
         }
-        val messages = mutableListOf<RecentMessage>()
+        val messages = mutableListOf<HistoricalMessage>()
         var permissionMode: String? = null
         try {
             file.bufferedReader().use { reader ->
@@ -97,14 +107,14 @@ object ClaudeSessionFile {
                             val msg = obj.getAsJsonObject("message") ?: return@forEach
                             val text = extractTextFromContent(msg.get("content"))
                             if (!text.isNullOrBlank()) {
-                                messages.add(RecentMessage("user", text))
+                                messages.add(HistoricalMessage("user", text))
                             }
                         }
                         "assistant" -> {
                             val msg = obj.getAsJsonObject("message") ?: return@forEach
                             val text = extractTextFromContent(msg.get("content"))
                             if (!text.isNullOrBlank()) {
-                                messages.add(RecentMessage("assistant", text))
+                                messages.add(HistoricalMessage("assistant", text))
                             }
                         }
                         // All other types (file-history-snapshot, summary, …)
