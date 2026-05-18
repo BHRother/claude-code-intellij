@@ -38,7 +38,14 @@ interface SessionListener {
 
 class ClaudeSession(
     val workingDirectory: String,
-    val name: String = "Session"
+    val name: String = "Session",
+    /**
+     * Seed the conversation with an existing claude session ID, so the
+     * first spawn is `--resume <id>` and Claude continues from where the
+     * prior chat left off. Null = brand-new conversation. Used by the
+     * "Recent" surface to revive past sessions across IDE restarts.
+     */
+    initialSessionId: String? = null,
 ) : Disposable {
 
     val id: String = UUID.randomUUID().toString().take(8)
@@ -46,7 +53,13 @@ class ClaudeSession(
     private val log = Logger.getInstance(ClaudeSession::class.java)
     private val listeners = CopyOnWriteArrayList<SessionListener>()
     private var process: Process? = null
-    private var sessionId: String? = null
+    @Volatile private var sessionId: String? = initialSessionId
+
+    /** The claude server-side session ID once known. Null until the first turn lands. */
+    val claudeSessionId: String? get() = sessionId
+
+    /** True when this session was constructed to resume a prior chat (vs starting fresh). */
+    val isResumed: Boolean = initialSessionId != null
 
     val messages = mutableListOf<ClaudeMessage>()
     private val readFiles = mutableSetOf<String>()

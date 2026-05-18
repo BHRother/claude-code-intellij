@@ -42,6 +42,8 @@ class SessionPanel(
     private val warnedModelPairs = mutableSetOf<Pair<String, String>>()
     /** One-shot: first time the user changes any chip in this session, drop a hint that it's session-local. */
     private var chipScopeHintShown = false
+    /** Mirrors the current tab display name. Updated on auto-name and manual rename. */
+    private var currentDisplayName: String = session.name
     private var thinkingTimer: Timer? = null
     private var dotCount = 0
     private var thinkingStartTime = 0L
@@ -181,6 +183,9 @@ class SessionPanel(
                         href.contains("/action/swap-model/") -> {
                             val key = href.substringAfter("/action/swap-model/")
                             pendingGrants[key]?.let { applyModelSwap(key) }
+                        }
+                        href.contains("/action/load-history") -> {
+                            loadFullHistory()
                         }
                         href.contains("/action/inline-diff/") -> {
                             val diffId = href.substringAfter("/action/inline-diff/")
@@ -391,7 +396,11 @@ class SessionPanel(
 
         session.addListener(this)
 
-        appendHtml("<div class='system-msg'>Claude Code session started. Working directory: ${escapeHtml(session.workingDirectory)}</div>")
+        if (session.isResumed) {
+            appendHtml(buildResumePreambleHtml())
+        } else {
+            appendHtml("<div class='system-msg'>Claude Code session started. Working directory: ${escapeHtml(session.workingDirectory)}</div>")
+        }
     }
 
     private fun onSendStopClick() {
@@ -506,7 +515,23 @@ class SessionPanel(
             .removePrefix("Refactor ")
             .take(30)
             .trim()
+        currentDisplayName = name
         onTabRename(name)
+    }
+
+    /**
+     * Called from outside (e.g. ClaudeToolWindowFactory's manual Rename
+     * action) so SessionPanel can keep its tracked name in sync. Persists
+     * the new name to the recent-chats store opportunistically.
+     */
+    fun updateDisplayName(name: String) {
+        if (name.isBlank()) return
+        currentDisplayName = name
+        // Refresh the persisted recent entry so the rename shows up in
+        // the "Recent" surface immediately, not just on the next turn.
+        if (session.claudeSessionId != null) {
+            persistRecentSnapshot()
+        }
     }
 
     private fun setBusyState(busy: Boolean) {
@@ -1015,7 +1040,280 @@ class SessionPanel(
                 appendHtml(buildFilesSummaryHtml())
                 changedFiles.clear()
             }
+
+            // Persist the recent-chats entry so it survives IDE restart.
+            // Only after a turn finished and Claude assigned a server-side
+            // session_id — without that, --resume can't reconnect.
+            persistRecentSnapshot()
         }
+    }
+
+    /**
+     * HTML preamble shown at the top of a resumed chat. Surfaces the
+     * stored last-message tail so the user has visual context for where
+     * they left off, without pretending we have the full history (Claude
+     * does — that's why --resume works).
+     */
+    private fun buildResumePreambleHtml(): String =
+        buildResumePreambleHtml(
+            messages = recentEntryForCurrentSession()?.lastMessages.orEmpty(),
+            showLoadFullLink = !fullHistoryAttempted,
+        )
+
+    /** Look up the persisted recent-chats entry for the current Claude session, if any. */
+    private fun recentEntryForCurrentSession(): com.claudecode.history.RecentSession? {
+        val claudeId = session.claudeSessionId ?: return null
+        return com.claudecode.history.RecentSessionsStore
+            .recentForProject(session.workingDirectory)
+            .firstOrNull { it.id == claudeId }
+    }
+
+    private fun buildResumePreambleHtml(
+        messages: List<com.claudecode.history.RecentMessage>,
+        showLoadFullLink: Boolean,
+    ): String {
+        val entry = recentEntryForCurrentSession()
+        val ageStr = entry?.let { humanizeAgo(System.currentTimeMillis() - it.lastUsedAt) }
+        val countStr = entry?.let { "${it.messageCount} prior message${if (it.messageCount == 1) "" else "s"}" }
+
+        val sb = StringBuilder()
+        // Single OUTER wrapper carries the id so setOuterHTML on it swaps
+        // header + load link + tail together. The old shape kept the id
+        // only on the header, leaving the tail div behind after replace.
+        sb.append("<div id='$RESUME_PREAMBLE_ID'>")
+
+        // Header
+        sb.append("<div class='system-msg' style='color: #808080; font-style: italic;'>")
+        sb.append("↻ Resumed session")
+        if (ageStr != null) sb.append(" from $ageStr")
+        if (countStr != null) sb.append(" — $countStr")
+        sb.append(". Claude still has the full conversation; the tail below is just so you can see where you left off.")
+        sb.append("</div>")
+
+        // Load link on its own line — easier to spot than inline with the header.
+        // Free-of-charge: reads the local JSONL Claude itself wrote — no API
+        // round-trip, no token cost. We hide the link once the load has been
+        // attempted (success or failure).
+        if (showLoadFullLink) {
+            sb.append("<div class='system-msg' style='margin-top: 2px; color: #808080;'>")
+            sb.append("<a href=\"http://localhost/action/load-history\">Load full history</a>")
+            sb.append(" <span style='color: #606060; font-size: 11px;'>(local file, no cost)</span>")
+            sb.append("</div>")
+        }
+
+        // Cached tail (truncated 5-message preview).
+        if (messages.isNotEmpty()) {
+            sb.append("<div style='margin: 4px 0 8px 10px; border-left: 2px solid #3C3F41; padding-left: 10px;'>")
+            messages.forEach { m ->
+                val who = if (m.role == "assistant") "Claude" else "You"
+                val color = if (m.role == "assistant") "#BCBEC4" else "#6897BB"
+                sb.append("<div style='color: #707070; margin-top: 4px;'>")
+                sb.append("<span style='color: $color;'>$who:</span> ")
+                sb.append(escapeHtml(m.text))
+                sb.append("</div>")
+            }
+            sb.append("</div>")
+        }
+
+        sb.append("</div>")  // close outer wrapper
+        return sb.toString()
+    }
+
+    /** One-shot: avoid offering / re-running the full-history load more than once per session. */
+    private var fullHistoryAttempted = false
+
+    /**
+     * Asynchronously read the full conversation from Claude Code's local
+     * JSONL file and swap the preamble in place. Tool calls / file edits /
+     * thinking blocks are skipped — text turns only.
+     *
+     * Also extracts the permission mode the session was last running with,
+     * and applies it to *this session only* via the chip override so the
+     * resumed chat behaves like the original. Global default is untouched.
+     *
+     * Failure path: drop the link, leave the existing 5-message tail in
+     * place, log a warning. The user can keep chatting normally.
+     */
+    private fun loadFullHistory() {
+        if (fullHistoryAttempted) return
+        fullHistoryAttempted = true
+
+        val claudeId = session.claudeSessionId
+        if (claudeId.isNullOrBlank()) {
+            // No session ID yet — can't locate file. Just rebuild without link.
+            replaceResumePreamble(buildResumePreambleHtml())
+            return
+        }
+        val workDir = session.workingDirectory
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val file = com.claudecode.history.ClaudeSessionFile.locate(workDir, claudeId)
+            val contents = if (file != null) {
+                com.claudecode.history.ClaudeSessionFile.readTextOnly(file)
+            } else {
+                com.claudecode.history.ClaudeSessionFile.SessionContents(
+                    emptyList(), null, "Local JSONL not found under ~/.claude/projects/."
+                )
+            }
+            ApplicationManager.getApplication().invokeLater {
+                if (contents.error != null || contents.messages.isEmpty()) {
+                    // Failure — drop the link, leave the existing tail.
+                    // Don't surface an error banner; the link disappearing
+                    // is enough signal, and the chat keeps working.
+                    replaceResumePreamble(buildResumePreambleHtml())
+                    return@invokeLater
+                }
+
+                // Render the full transcript as proper chat blocks (same
+                // styling as live messages — `.user-msg`, markdown for
+                // assistant, code blocks etc.). Closes with an explicit
+                // end-of-history separator so the boundary between the
+                // resumed transcript and any new turn is unambiguous.
+                replaceResumePreamble(renderFullHistoryHtml(contents.messages))
+
+                // NB: we deliberately keep the cached 5-message tail in
+                // RecentSessionsStore. Clearing it would make the *next*
+                // reopen of this session show only the header + Load link
+                // with no quick preview — which costs a click and a JSONL
+                // parse just to see "where did I leave off". The cache
+                // is ~2.5KB per session and serves a different purpose
+                // (fast quick-glance) than the JSONL (full history on
+                // demand), so the duplication is intentional.
+
+                // Apply the historical permission mode for this session only.
+                // Doesn't touch global settings — chip override scope.
+                val mode = contents.permissionMode
+                if (!mode.isNullOrBlank() &&
+                    mode in com.claudecode.ClaudeConstants.PERMISSION_MODES
+                ) {
+                    session.permissionModeOverride = mode
+                    permissionChip.updateLabel(com.claudecode.ClaudeConstants.shortPermissionModeLabel(mode))
+                    permissionChip.toolTipText = "Permission mode: " +
+                        com.claudecode.ClaudeConstants.describePermissionMode(mode)
+                }
+            }
+        }
+    }
+
+    /**
+     * Builds the full-history replacement HTML: short header div, then one
+     * proper chat block per message (user → `.user-msg`, assistant →
+     * markdown-rendered same as live chat), then an explicit
+     * "End of previous history" separator so the boundary with any new
+     * turn is visually clear. Historical messages don't get copy/edit
+     * action links — they're context, not actionable.
+     */
+    private fun renderFullHistoryHtml(messages: List<com.claudecode.history.RecentMessage>): String {
+        val sb = StringBuilder()
+        // Same single-wrapper pattern as buildResumePreambleHtml so a future
+        // re-render (or rollback) swaps everything via one setOuterHTML.
+        sb.append("<div id='$RESUME_PREAMBLE_ID'>")
+
+        sb.append("<div class='system-msg' style='color: #808080; font-style: italic;'>")
+        sb.append("↻ Resumed session — full local history loaded (${messages.size} message")
+        sb.append(if (messages.size == 1) "" else "s").append(").")
+        sb.append("</div>")
+
+        messages.forEach { m ->
+            when (m.role) {
+                "user" -> {
+                    sb.append("<div class='user-msg'>")
+                    sb.append(escapeHtml(m.text))
+                    sb.append("</div>")
+                }
+                "assistant" -> {
+                    // Reuse the same markdown pipeline live chat uses, but
+                    // suppress copy/apply links — these are historical and
+                    // wiring them up would require seeding the action maps
+                    // with new keys for every old code block.
+                    sb.append(MarkdownRenderer.render(m.text))
+                }
+                // Defensive: unknown role → render as plain dimmed text
+                // rather than dropping silently.
+                else -> {
+                    sb.append("<div class='system-msg' style='color: #707070;'>")
+                    sb.append(escapeHtml(m.text))
+                    sb.append("</div>")
+                }
+            }
+        }
+
+        sb.append("<div class='system-msg' style='margin: 14px 0 6px 0; padding: 6px 0; ")
+        sb.append("color: #707070; border-top: 1px dashed #3C3F41; border-bottom: 1px dashed #3C3F41; ")
+        sb.append("text-align: center; font-style: italic; font-size: 11px;'>")
+        sb.append("─── End of previous history ───")
+        sb.append("</div>")
+
+        sb.append("</div>")  // close outer wrapper
+        return sb.toString()
+    }
+
+    /** Replace the resume-preamble div in place via HTMLDocument.setOuterHTML. */
+    private fun replaceResumePreamble(newHtml: String) {
+        val doc = outputPane.document as? javax.swing.text.html.HTMLDocument ?: return
+        val element = doc.getElement(RESUME_PREAMBLE_ID)
+        if (element != null) {
+            try {
+                doc.setOuterHTML(element, newHtml)
+            } catch (_: Exception) {
+                // Fallback: append at end. Worst-case duplicates the preamble
+                // but never crashes.
+                appendHtml(newHtml)
+            }
+        } else {
+            appendHtml(newHtml)
+        }
+    }
+
+    companion object {
+        private const val RESUME_PREAMBLE_ID = "resume-preamble"
+    }
+
+    private fun humanizeAgo(deltaMs: Long): String {
+        val mins = deltaMs / 60_000L
+        val hours = mins / 60L
+        val days = hours / 24L
+        return when {
+            days >= 2 -> "$days days ago"
+            days == 1L -> "1 day ago"
+            hours >= 2 -> "$hours hours ago"
+            hours == 1L -> "1 hour ago"
+            mins >= 2 -> "$mins minutes ago"
+            else -> "just now"
+        }
+    }
+
+    /**
+     * Snapshot the current session into [com.claudecode.history.RecentSessionsStore]
+     * so it appears in the "Recent" surface (chip / panel / etc.) across
+     * IDE restarts. Tail of last messages is purely informational; Claude
+     * owns the full conversation.
+     */
+    private fun persistRecentSnapshot() {
+        val claudeId = session.claudeSessionId ?: return
+        val now = System.currentTimeMillis()
+        val tail = session.messages.takeLast(com.claudecode.history.RecentSessionsStore.MAX_MESSAGES)
+            .map { com.claudecode.history.RecentMessage(role = it.role, text = it.content) }
+        val truncated = com.claudecode.history.RecentSessionsStore.truncateMessages(tail)
+
+        // Preserve createdAt across touches by looking up any existing entry.
+        val existing = com.claudecode.history.RecentSessionsStore
+            .recentForProject(session.workingDirectory)
+            .firstOrNull { it.id == claudeId }
+        val createdAt = existing?.createdAt ?: now
+
+        com.claudecode.history.RecentSessionsStore.touch(
+            session.workingDirectory,
+            com.claudecode.history.RecentSession(
+                id = claudeId,
+                name = currentDisplayName,
+                workingDirectory = session.workingDirectory,
+                createdAt = createdAt,
+                lastUsedAt = now,
+                messageCount = session.messages.size,
+                lastMessages = truncated,
+            )
+        )
     }
 
     override fun onError(session: ClaudeSession, error: String) {

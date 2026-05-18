@@ -141,6 +141,8 @@ class ClaudeToolWindowManager(
                     )
                     if (!newName.isNullOrBlank()) {
                         content.displayName = newName
+                        val s = contentToSession[content]
+                        if (s != null) sessionPanels[s.id]?.updateDisplayName(newName)
                     }
                 }
 
@@ -152,8 +154,12 @@ class ClaudeToolWindowManager(
                 override fun getActionUpdateThread() =
                     com.intellij.openapi.actionSystem.ActionUpdateThread.EDT
             })
+            add(com.claudecode.ui.RecentSessionsAction(project))
         }
         toolWindow.setTitleActions(actionGroup.getChildActionsOrStubs().toList())
+        // Drop entries past their 30-day TTL once per tool-window open.
+        // Cheap, runs on a pool thread inside the store.
+        com.claudecode.history.RecentSessionsStore.pruneOld()
     }
 
     override fun onSessionAdded(session: ClaudeSession) {
