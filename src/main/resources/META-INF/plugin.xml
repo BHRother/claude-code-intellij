@@ -25,6 +25,7 @@
         <li>Multiple parallel Claude Code sessions in a side panel</li>
         <li>Project-aware: Claude works in your open project's directory</li>
         <li>Session memory: Claude remembers context across messages</li>
+        <li><b>Resume past chats</b> — a clock-icon dropdown in the tool window header lists recent sessions per project. Pick one and the previous conversation auto-loads inline (read straight from Claude's local transcript, no API cost) so you can continue from where you left off after closing the IDE. Inline pencil / trash icons rename or remove entries.</li>
         <li>Markdown rendering with syntax-highlighted code blocks</li>
         <li>Tool-use indicators with colored status signals and diff summaries</li>
         <li><b>File chips</b> — drag/drop, copy/paste, or type a filename to attach files as context; resolves bare filenames against your project</li>
@@ -49,12 +50,19 @@
 
     <h3>Productivity</h3>
     <ul>
-        <li>Editable model selector: type any Claude model ID; remembers models seen in past sessions</li>
+        <li><b>Auto-updating model catalog</b> — the model dropdown refreshes every 24h from a published list (with bundled offline fallback), so new Claude releases become available without a plugin update. Deprecated models get a <code>(deprecated)</code> badge and a one-click swap to the recommended replacement.</li>
         <li>Keyboard shortcuts: <b>Cmd+Shift+I</b> to toggle the chat panel, <b>Cmd+Alt+K</b> for inline edit (Ctrl variants on Windows/Linux)</li>
         <li>Stop requests with Escape</li>
-        <li>Permission mode: <b>acceptEdits</b> (file edits OK, shell blocked), <b>bypassPermissions</b> (allow all), or <b>plan</b> (read-only) — maps to the CLI's <code>--permission-mode</code></li>
+        <li>Permission mode: <b>Plan</b> (read-only Read/Grep/Glob), <b>Content Only</b> (file writes/edits OK, shell blocked), or <b>Unrestricted</b> (allow all) — maps to the CLI's <code>--permission-mode</code></li>
         <li>Project tree auto-refreshes when Claude creates, modifies, or deletes files</li>
         <li>Cost tracking per response</li>
+    </ul>
+
+    <h3>Settings — Model &amp; inference</h3>
+    <ul>
+        <li><b>Extended thinking budget</b> — Off / Low (1k) / Medium (8k) / High (32k). Sets <code>MAX_THINKING_TOKENS</code> for Opus/Sonnet 4.x; other models ignore it. Trade speed and cost for deeper reasoning on harder tasks.</li>
+        <li><b>Append system prompt</b> — multi-line text appended to Claude's system prompt every spawn via <code>--append-system-prompt</code>. Use for project conventions, preferred tone, persona instructions.</li>
+        <li><b>Max agentic turns</b> — hard cap on the tool-call loop via <code>--max-turns</code>. <code>0</code> = unlimited (CLI default).</li>
     </ul>
 
     <h3>Prerequisites</h3>
@@ -66,6 +74,24 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.0.6</h3>
+    <ul>
+        <li><b>Recent chats</b> — a clock-icon dropdown in the tool window header lists past sessions for the current project (kept per-project, capped at 10, 30-day TTL). Click one to reopen the conversation; Claude picks up where it left off via <code>--resume &lt;id&gt;</code>. Each row has inline pencil (rename) and trash (delete) icons; hover highlights the row. Deleting only removes the dropdown entry — Claude's own transcript under <code>~/.claude/projects</code> is untouched.</li>
+        <li><b>Full transcript on resume</b> — when you open a recent chat, the previous conversation auto-loads from Claude's local JSONL (no API call, no token cost) and renders inline as proper chat blocks — user bubbles, markdown-rendered assistant replies, code blocks — terminated by an "End of previous history" separator. Reading is free; if the local file is missing, the chat still works (Claude has the conversation server-side).</li>
+        <li><b>Permission mode auto-applies on resume</b> — whatever permission mode the original session ran with is reapplied as a per-session chip override, so the resumed chat behaves like the original. Global default is untouched.</li>
+        <li><b>Settings — Model &amp; inference</b> — three new controls:
+            <ul>
+                <li><b>Extended thinking</b> — Off / Low (1k) / Medium (8k) / High (32k). Sets <code>MAX_THINKING_TOKENS</code> on the spawned <code>claude</code> process. Effective on Opus / Sonnet 4.x; other models ignore it.</li>
+                <li><b>Append system prompt</b> — multi-line text appended to Claude's system prompt every spawn via <code>--append-system-prompt</code>. Use for project conventions, preferred tone, persona instructions.</li>
+                <li><b>Max agentic turns</b> — spinner cap on the agentic tool-call loop via <code>--max-turns</code>. <code>0</code> = unlimited (CLI default).</li>
+            </ul>
+        </li>
+        <li><b>Models catalog with auto-refresh</b> — the model list now updates from a published catalog every 24h (with a bundled offline fallback), so new Claude models become available without a plugin update. Deprecated models render with a <code>(deprecated)</code> suffix and a one-click swap to the recommended replacement when selected. The <i>Refresh catalog</i> button in Settings forces an immediate re-fetch. <code>&lt;synthetic&gt;</code> and similar internal placeholders are filtered out.</li>
+        <li><b>Settings: model field is no longer free-text</b> — pick from the catalog (or <b>Default</b> for "let Claude Code choose"). Avoids silent typos that produced "exited with code 1" errors. A <i>Clear custom history</i> button wipes the persisted list of model IDs Claude has responded with that aren't in the catalog.</li>
+        <li><b>Async confirmation dialogs now surface in front of Settings</b> — fix for <i>Refresh catalog</i> where the success notice was appearing behind the modal Settings dialog. Captures the dialog's <code>ModalityState</code> on the EDT and re-uses it on the async callback, so the Messages dialog stacks above.</li>
+        <li><b>Esc is now the only "stop current request" shortcut</b> — removed the legacy double Cmd+C / Ctrl+C handling everywhere (Welcome page, README, plugin description). Cmd/Ctrl+C in the input area now just copies, never interrupts Claude.</li>
+    </ul>
+
     <h3>1.0.5</h3>
     <ul>
         <li><b>Fix-with-Claude intention description added</b> — newer IntelliJ builds require <code>&lt;intentionAction&gt;</code> registrations to ship a <code>description.html</code> plus before/after templates under <code>resources/intentionDescriptions/&lt;ClassName&gt;/</code>. Without them the IDE logged a SEVERE on every load and the intention couldn't appear in the Settings → Editor → Intentions list. Files now included.</li>
