@@ -42,6 +42,13 @@ class SessionPanel(
     private val warnedModelPairs = mutableSetOf<Pair<String, String>>()
     /** One-shot: first time the user changes any chip in this session, drop a hint that it's session-local. */
     private var chipScopeHintShown = false
+    // Failure-dedupe state: consecutive failures of the same tool name
+    // collapse into a single badge with a (Nx) suffix instead of spamming
+    // a new "✗ failed" line per attempt.
+    private var lastFailedToolName: String? = null
+    private var lastFailedElementId: String? = null
+    private var lastFailedCount: Int = 0
+    private var toolFailCounter: Int = 0
     /** Mirrors the current tab display name. Updated on auto-name and manual rename. */
     private var currentDisplayName: String = session.name
     private var thinkingTimer: Timer? = null
@@ -426,6 +433,7 @@ class SessionPanel(
         autoNameTab(text)
         appendUserMessage(text)
         permissionHintShown = false
+        resetFailureDedupe()
         setBusyState(true)
         // Sending a new message means "I'm done reading history" — snap to
         // the bottom so the user's message and Claude's reply are in view,
@@ -484,6 +492,7 @@ class SessionPanel(
         autoNameTab(text)
         appendUserMessage(text)
         permissionHintShown = false
+        resetFailureDedupe()
         setBusyState(true)
         scrollOutputToBottom()
         session.sendMessage(text)
@@ -839,15 +848,82 @@ class SessionPanel(
         }
     }
 
-    override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean) {
+    override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean, resultContent: String?) {
         ApplicationManager.getApplication().invokeLater {
+            val justFinishedTool = activeToolName
             activeToolName = null
             thinkingContent = null
             thinkingStartTime = System.currentTimeMillis()
             statusLabel.text = "Claude is thinking..."
-            val color = if (isError) "#FF6B68" else "#6A8759"
-            val label = if (isError) "\u2717 failed" else "\u2713"
-            appendHtml("<div class='tool-msg'>&nbsp;&nbsp;<span style='color: $color;'>$label</span></div>")
+
+            if (!isError) {
+                // Successful tool finishes the failure run \u2014 reset dedupe state.
+                lastFailedToolName = null
+                lastFailedElementId = null
+                lastFailedCount = 0
+                appendHtml("<div class='tool-msg'>&nbsp;&nbsp;<span style='color: #6A8759;'>\u2713</span></div>")
+                return@invokeLater
+            }
+
+            // Failure path: collapse consecutive failures of the same tool
+            // into a single badge with a "(Nx)" count, and surface a snippet
+            // of the actual error message so the user knows *why* it failed.
+            val snippet = errorSnippet(resultContent)
+            if (justFinishedTool != null && justFinishedTool == lastFailedToolName && lastFailedElementId != null) {
+                lastFailedCount += 1
+                updateFailureElement(lastFailedElementId!!, justFinishedTool, snippet, lastFailedCount)
+            } else {
+                lastFailedToolName = justFinishedTool
+                lastFailedCount = 1
+                lastFailedElementId = "tool-fail-${toolFailCounter++}"
+                appendHtml(buildFailureHtml(lastFailedElementId!!, justFinishedTool, snippet, 1))
+            }
+        }
+    }
+
+    /**
+     * Trim and collapse the raw tool_result content into a single line for
+     * the failure badge. Strips ANSI/PowerShell category cruft and clamps
+     * to FAILURE_SNIPPET_MAX so the badge stays one line.
+     */
+    private fun errorSnippet(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        // Take the first non-blank line \u2014 most CLI errors lead with the
+        // useful summary and follow with stack/category noise.
+        val firstLine = raw.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotEmpty() }
+            ?: return null
+        return if (firstLine.length <= FAILURE_SNIPPET_MAX) firstLine
+        else firstLine.take(FAILURE_SNIPPET_MAX - 1) + "\u2026"
+    }
+
+    private fun resetFailureDedupe() {
+        lastFailedToolName = null
+        lastFailedElementId = null
+        lastFailedCount = 0
+    }
+
+    private fun buildFailureHtml(elementId: String, toolName: String?, snippet: String?, count: Int): String {
+        val tail = buildString {
+            if (toolName != null) append(" ${escapeHtml(toolName)}")
+            if (snippet != null) append(": ${escapeHtml(snippet)}")
+            if (count > 1) append(" <span style='color: #707070;'>(${count}x)</span>")
+        }
+        return "<div id='$elementId' class='tool-msg'>&nbsp;&nbsp;" +
+            "<span style='color: #FF6B68;'>\u2717 failed</span>" +
+            "<span style='color: #BCBEC4;'>$tail</span>" +
+            "</div>"
+    }
+
+    private fun updateFailureElement(elementId: String, toolName: String?, snippet: String?, count: Int) {
+        val doc = outputPane.document as? javax.swing.text.html.HTMLDocument ?: return
+        val element = doc.getElement(elementId) ?: return
+        try {
+            doc.setOuterHTML(element, buildFailureHtml(elementId, toolName, snippet, count))
+        } catch (_: Exception) {
+            // Fallback to a fresh badge if the in-place swap fails for any reason.
+            appendHtml(buildFailureHtml(elementId, toolName, snippet, count))
         }
     }
 
@@ -959,6 +1035,22 @@ class SessionPanel(
             toolName,
             if (broad) null else inputDetail
         )
+
+        // The in-flight claude process won't pick up .claude/settings.local.json
+        // changes \u2014 that file is read at spawn time. Snapshot the last user
+        // prompt, kill any runaway request, then auto-resend after the
+        // grant write completes so Claude retries with the new permission.
+        //
+        // We retry whether or not the session is currently busy: the user
+        // clicked Allow on this denial banner, which is an explicit "redo
+        // this with the permission granted" signal. If they clicked after
+        // the original request already finished/gave up (very common),
+        // they still want it to run again with the new permission.
+        val lastPrompt = session.messages.lastOrNull { it.role == "user" }?.content
+        if (session.isBusy) {
+            session.stop()
+        }
+
         // File I/O off the EDT \u2014 JSON parse+write is fast but should never
         // block the event dispatch thread on principle.
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -968,7 +1060,49 @@ class SessionPanel(
             )
             ApplicationManager.getApplication().invokeLater {
                 renderGrantResult(key, result)
+                if (result.success && lastPrompt != null) {
+                    scheduleRetryAfterGrant(lastPrompt)
+                }
             }
+        }
+    }
+
+    /**
+     * After applying a permission grant or mode switch, re-spawn the
+     * last user prompt so Claude retries from the same conversation
+     * context with the new permission in place.
+     *
+     * Stop is asynchronous (kills the process; onFinished resets isBusy
+     * via setBusyState). To make sure we don't try to send while the
+     * previous process is still tearing down, we poll isBusy with a
+     * cheap invokeLater chain, then send. Bounded to ~30 retries so a
+     * stuck stop can't loop forever.
+     */
+    private fun scheduleRetryAfterGrant(prompt: String, attempt: Int = 0) {
+        if (!session.isBusy) {
+            appendHtml(
+                "<div class='system-msg' style='color: #6A8759; font-style: italic;'>" +
+                    "↻ Retrying with new permission…" +
+                    "</div>"
+            )
+            permissionHintShown = false
+            resetFailureDedupe()
+            setBusyState(true)
+            scrollOutputToBottom()
+            session.sendMessage(prompt)
+            return
+        }
+        if (attempt >= MAX_RETRY_POLL_ATTEMPTS) {
+            appendHtml(
+                "<div class='system-msg' style='color: #D9B263;'>" +
+                    "⚠ Could not retry automatically — the previous request is still stopping. " +
+                    "Send your message again manually." +
+                    "</div>"
+            )
+            return
+        }
+        ApplicationManager.getApplication().invokeLater {
+            scheduleRetryAfterGrant(prompt, attempt + 1)
         }
     }
 
@@ -998,12 +1132,18 @@ class SessionPanel(
         }
 
         val verb = if (result.alreadyPresent) "Already in" else "Added to"
+        // applyGrant always queues a retry when there's a last user prompt
+        // to replay; the banner copy follows that.
+        val willRetry = session.messages.any { it.role == "user" }
+        val followUp = if (willRetry)
+            "Retrying your message automatically with the new permission\u2026"
+        else
+            "Send your message again \u2014 Claude will now be allowed to run it under the current permission mode."
         replacePermissionBanner(
             key,
             "<div style='color: #6A8759;'>\u2713 $verb project allowlist: " +
                 "<code>${escapeHtml(result.pattern)}</code></div>" +
-                "<div style='color: #808080; margin-top: 4px;'>Resend your message \u2014 Claude will " +
-                "now be allowed to run it under the current permission mode.</div>",
+                "<div style='color: #808080; margin-top: 4px;'>$followUp</div>",
             accentColor = "#6A8759",
         )
         // Allow another blocked-banner to fire on the next denial.
@@ -1012,6 +1152,14 @@ class SessionPanel(
 
     private fun switchToUnrestricted(key: String) {
         pendingGrants.remove(key)
+        // Same auto-retry semantics as applyGrant: clicking Unrestricted is
+        // an explicit retry signal regardless of whether the request is
+        // still in flight.
+        val lastPrompt = session.messages.lastOrNull { it.role == "user" }?.content
+        if (session.isBusy) {
+            session.stop()
+        }
+
         val mode = com.claudecode.ClaudeConstants.PERMISSION_MODE_BYPASS
         session.permissionModeOverride = mode
         permissionChip.updateLabel(com.claudecode.ClaudeConstants.shortPermissionModeLabel(mode))
@@ -1021,11 +1169,15 @@ class SessionPanel(
             key,
             "<div style='color: #6A8759;'>\u2713 Switched permission mode to <b>Unrestricted</b> " +
                 "for this session.</div>" +
-                "<div style='color: #808080; margin-top: 4px;'>Resend your message to retry. " +
-                "Global default is unchanged \u2014 open Settings to make it permanent.</div>",
+                "<div style='color: #808080; margin-top: 4px;'>" +
+                (if (lastPrompt != null) "Retrying your message\u2026" else "Send a new message to use the new mode.") +
+                " Global default is unchanged \u2014 open Settings to make it permanent.</div>",
             accentColor = "#6A8759",
         )
         permissionHintShown = false
+        if (lastPrompt != null) {
+            scheduleRetryAfterGrant(lastPrompt)
+        }
     }
 
     override fun onFinished(session: ClaudeSession, costUsd: Double?) {
@@ -1211,6 +1363,10 @@ class SessionPanel(
 
     companion object {
         private const val RESUME_PREAMBLE_ID = "resume-preamble"
+        /** Max length of the inline error snippet on a "✗ failed" badge. */
+        private const val FAILURE_SNIPPET_MAX = 140
+        /** Bound on the post-grant retry-poll loop — ~30 invokeLater ticks. */
+        private const val MAX_RETRY_POLL_ATTEMPTS = 30
     }
 
     private fun humanizeAgo(deltaMs: Long): String {
