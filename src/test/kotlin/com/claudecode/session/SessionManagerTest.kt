@@ -29,7 +29,7 @@ class SessionManagerTest {
                 override fun onFileChanged(session: ClaudeSession, filePath: String, action: String) {}
                 override fun onTaskProgress(session: ClaudeSession, description: String) {}
                 override fun onModelInfo(session: ClaudeSession, model: String) {}
-                override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean) {}
+                override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean, resultContent: String?) {}
                 override fun onFinished(session: ClaudeSession, costUsd: Double?) {}
                 override fun onError(session: ClaudeSession, error: String) {}
                 override fun onDebug(session: ClaudeSession, message: String) {}

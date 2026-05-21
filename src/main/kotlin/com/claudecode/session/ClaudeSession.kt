@@ -22,7 +22,12 @@ interface SessionListener {
     fun onFileChanged(session: ClaudeSession, filePath: String, action: String)
     fun onTaskProgress(session: ClaudeSession, description: String)
     fun onModelInfo(session: ClaudeSession, model: String)
-    fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean)
+    /**
+     * Tool finished. [resultContent] is the textual content from the
+     * tool_result block (may be empty / null for some tools). The UI uses
+     * it on error to show *what* went wrong rather than a bare "✗ failed".
+     */
+    fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean, resultContent: String?)
     /**
      * Fired when a tool call was denied by the active --permission-mode.
      * [toolInputDetail] is the most relevant single input field for the tool:
@@ -204,7 +209,13 @@ class ClaudeSession(
 
         debug("Starting process...")
         process = pb.start()
-        debug("Process started (pid=${process?.pid()})")
+        // Capture our process reference so the cleanup below can detect
+        // the case where stop() killed us and a NEW run replaced us in
+        // the `process` field — in which case we must NOT clobber the
+        // shared isBusy / process / onFinished state belonging to the
+        // newer run.
+        val myProcess = process
+        debug("Process started (pid=${myProcess?.pid()})")
 
         val responseText = StringBuilder()
         // Non-json lines from the CLI/pty wrapper — usually debug noise, BUT
@@ -281,9 +292,19 @@ class ClaudeSession(
             messages.add(ClaudeMessage("assistant", responseText.toString()))
         }
 
-        isBusy = false
-        listeners.forEach { it.onFinished(this, costUsd) }
-        process = null
+        // Identity guard: if a newer run has replaced us in the `process`
+        // field (which happens when applyGrant / switchToUnrestricted
+        // kills us and immediately spawns a retry), the newer run owns
+        // the shared state — we must not flip isBusy back to false, null
+        // out its process reference, or fire a misleading onFinished.
+        val stillCurrent = process === myProcess
+        if (stillCurrent) {
+            isBusy = false
+            process = null
+            listeners.forEach { it.onFinished(this, costUsd) }
+        } else {
+            debug("Cleanup skipped — superseded by a newer run")
+        }
     }
 
     internal fun parseStreamLine(line: String, responseText: StringBuilder): Double? {
@@ -395,8 +416,15 @@ class ClaudeSession(
                 if (contentBlock?.get("type")?.asString == "tool_result") {
                     val toolUseId = contentBlock.get("tool_use_id")?.asString
                     val isError = contentBlock.get("is_error")?.asBoolean ?: false
+                    // content_block_start fires at the start of a streaming
+                    // block — full content arrives via deltas. Best-effort
+                    // extraction here; the user-message path below carries
+                    // the canonical complete content for tool_result blocks.
+                    val resultContent = contentBlock.get("content")?.let {
+                        if (it.isJsonPrimitive) it.asString else null
+                    }
                     if (toolUseId != null) {
-                        listeners.forEach { it.onToolResult(this, toolUseId, isError) }
+                        listeners.forEach { it.onToolResult(this, toolUseId, isError, resultContent) }
                     }
                 }
             }
@@ -414,9 +442,15 @@ class ClaudeSession(
                     if (obj.get("type")?.asString != "tool_result") continue
                     val toolUseId = obj.get("tool_use_id")?.asString
                     val isError = obj.get("is_error")?.asBoolean ?: false
-                    val resultContent = obj.get("content")?.asString
+                    // tool_result.content can be a bare string OR an array
+                    // of typed blocks. We just need the text for the UI badge,
+                    // so handle the simple-string case and fall back to null
+                    // (the array case carries non-text data we don't surface).
+                    val resultContent = obj.get("content")?.let {
+                        if (it.isJsonPrimitive) it.asString else null
+                    }
                     if (toolUseId != null) {
-                        listeners.forEach { it.onToolResult(this, toolUseId, isError) }
+                        listeners.forEach { it.onToolResult(this, toolUseId, isError, resultContent) }
                     }
                     if (isError && resultContent != null && looksLikePermissionDenial(resultContent)) {
                         listeners.forEach { it.onPermissionBlocked(this, lastToolName, lastToolInputDetail) }

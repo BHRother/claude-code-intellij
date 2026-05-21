@@ -772,6 +772,7 @@ class TestSessionListener : SessionListener {
     var lastTaskProgress: String? = null
     var lastToolResultId: String? = null
     var lastToolResultIsError: Boolean? = null
+    var lastToolResultContent: String? = null
     var lastCost: Double? = null
 
     override fun onText(session: ClaudeSession, text: String) { lastText = text }
@@ -786,9 +787,10 @@ class TestSessionListener : SessionListener {
     }
     override fun onTaskProgress(session: ClaudeSession, description: String) { lastTaskProgress = description }
     override fun onModelInfo(session: ClaudeSession, model: String) { lastModel = model }
-    override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean) {
+    override fun onToolResult(session: ClaudeSession, toolUseId: String, isError: Boolean, resultContent: String?) {
         lastToolResultId = toolUseId
         lastToolResultIsError = isError
+        lastToolResultContent = resultContent
     }
     override fun onFinished(session: ClaudeSession, costUsd: Double?) { lastCost = costUsd }
     override fun onError(session: ClaudeSession, error: String) {}
