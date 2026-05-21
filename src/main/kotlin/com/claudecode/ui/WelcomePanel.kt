@@ -76,10 +76,24 @@ class WelcomePanel(
         add(buttonPanel, BorderLayout.SOUTH)
     }
 
+    /**
+     * Returns "(v1.0.6)" when the plugin version resolves, or an empty
+     * string when it can't (we'd rather drop the suffix than print
+     * "(v?)"). The "-dev.<timestamp>" portion is stripped so dev builds
+     * still display the clean release-style version.
+     */
+    private fun currentPluginVersionSuffix(): String {
+        val plugin = com.intellij.ide.plugins.PluginManagerCore
+            .getPlugin(com.intellij.openapi.extensions.PluginId.getId("com.claudecode.plugin"))
+            ?: return ""
+        val version = plugin.version?.substringBefore("-dev.")?.ifBlank { null } ?: return ""
+        return "(v$version)"
+    }
+
     private fun buildWelcomeHtml(): String {
         return """
             <html><body>
-            <h1>Claude Code</h1>
+            <h1>Claude Code ${currentPluginVersionSuffix()}</h1>
             <div class='section'>
                 AI pair programming powered by Claude, directly inside your IDE.
                 Ask questions, generate code, refactor, debug, and more — all in context
