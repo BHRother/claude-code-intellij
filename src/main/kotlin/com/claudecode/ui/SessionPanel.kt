@@ -51,6 +51,8 @@ class SessionPanel(
     private var toolFailCounter: Int = 0
     /** Mirrors the current tab display name. Updated on auto-name and manual rename. */
     private var currentDisplayName: String = session.name
+    /** Slash-command autocomplete popup; null until init wires it on top of the input area. */
+    private var slashPopup: SlashCommandPopup? = null
     private var thinkingTimer: Timer? = null
     private var dotCount = 0
     private var thinkingStartTime = 0L
@@ -70,6 +72,12 @@ class SessionPanel(
     private var toolUseCounter = 0
     private val toolUseIdToHtmlId = mutableMapOf<String, String>()
     private var permissionHintShown = false
+    /** Running total of usage cost (USD) for this panel's session. Surfaced by `/cost`. */
+    private var totalCostUsd: Double = 0.0
+    /** Last turn's cost (USD). Surfaced by `/cost` alongside the total. */
+    private var lastTurnCostUsd: Double = 0.0
+    /** Epoch-millis the most recent request started. Used by the long-task notification heuristic. */
+    private var lastTurnStartedAt: Long = 0L
 
     // Edit consolidation state: consecutive Edit calls on the same file update one UI entry
     private var lastEditFilePath: String? = null
@@ -289,12 +297,16 @@ class SessionPanel(
             }
         })
 
-        // Escape to stop current request
+        // Escape to stop current request (or dismiss slash popup if showing)
         val panelInputMap = this.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
         val panelActionMap = this.actionMap
         panelInputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "escape-stop")
         panelActionMap.put("escape-stop", object : AbstractAction() {
             override fun actionPerformed(e: java.awt.event.ActionEvent?) {
+                if (slashPopup?.isShowing == true) {
+                    slashPopup!!.hide()
+                    return
+                }
                 if (session.isBusy) {
                     session.stop()
                     appendHtml("<div class='system-msg'>Stopped.</div>")
@@ -323,6 +335,8 @@ class SessionPanel(
                 }
             }
         }
+
+        installSlashCommandPopup()
 
         sendStopButton = AccentButton("Send").apply {
             font = smallFont
@@ -421,11 +435,38 @@ class SessionPanel(
     }
 
     private fun sendCurrentMessage() {
+        // If the slash-command popup is showing, Enter picks the highlighted
+        // command instead of sending. The popup's onSelect callback rewrites
+        // the input to the command string; the next Enter sends it normally.
+        if (slashPopup?.isShowing == true) {
+            slashPopup!!.pickSelected()
+            return
+        }
+
         val text = inputArea.getFullText()
         if (text.isEmpty() || session.isBusy) return
 
-        if (looksLikeCliCommand(text)) {
-            showCliCommandWarning(text)
+        val trimmed = text.trim()
+
+        // `--flag` style input: claude -p won't parse it, surface the warning
+        // unchanged. Slash commands are handled separately below.
+        if (Regex("^--[a-zA-Z]").containsMatchIn(trimmed)) {
+            showCliFlagWarning(text)
+            return
+        }
+
+        // Slash command: handle known ones locally (so they work in -p
+        // mode without depending on Claude's interactive shell). Unknown
+        // slash inputs are blocked with a warning — `claude -p "/foo"`
+        // tries to resolve "foo" as a session ID and fails with
+        // "No conversation found with session ID: ..." rather than
+        // treating it as chat text.
+        if (looksLikeSlashCommand(trimmed)) {
+            if (handleSlashCommand(trimmed)) {
+                inputArea.clear()
+                return
+            }
+            showUnknownSlashWarning(trimmed)
             return
         }
 
@@ -443,48 +484,220 @@ class SessionPanel(
     }
 
     /**
-     * Detects messages that look like Claude Code CLI invocations
-     * (`--model …`, `/help`, `/clear`, etc.) rather than chat prompts.
-     * The plugin runs claude in `-p` (non-interactive) mode, so neither
-     * slash-commands nor extra CLI flags work — they'd cause a hard CLI
-     * error or be silently ignored. Better to intercept and explain.
-     *
-     * Heuristic kept tight to avoid false positives on legitimate text:
-     *   - `--word…` at the very start (with no space before)
-     *   - `/word` as the first whitespace-separated token, where word is
-     *     a short letter-only identifier (matches `/help`, `/clear`, `/model`
-     *     but not `/Users/foo` or `/etc/hosts`)
+     * Tightly-bounded "looks like /command" check that excludes path-like
+     * inputs (`/Users/foo`, `/etc/hosts`). First token must be `/word`
+     * with letters/dashes only, 2-20 chars.
      */
-    private fun looksLikeCliCommand(text: String): Boolean {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return false
-        if (Regex("^--[a-zA-Z]").containsMatchIn(trimmed)) return true
-        // First token: `/<letters/dashes>` followed by space or end. Path-like
-        // inputs (`/Users/...`, `/etc/passwd`) include slashes after the first
-        // segment and are skipped by the `(\\s|\$)` boundary.
+    private fun looksLikeSlashCommand(trimmed: String): Boolean {
         val firstToken = trimmed.substringBefore(' ')
-        if (firstToken.length in 2..20 && Regex("^/[a-zA-Z][a-zA-Z-]*$").matches(firstToken)) {
-            return true
-        }
-        return false
+        return firstToken.length in 2..20 &&
+            Regex("^/[a-zA-Z][a-zA-Z-]*$").matches(firstToken)
     }
 
-    private fun showCliCommandWarning(text: String) {
+    /**
+     * Intercepts the well-known slash commands. Returns true if the input
+     * was fully handled and consumed; false if the command is unknown and
+     * the caller should send it through as plain text.
+     */
+    private fun handleSlashCommand(trimmed: String): Boolean {
+        val firstToken = trimmed.substringBefore(' ').lowercase()
+        return when (firstToken) {
+            "/clear" -> { runClearCommand(); true }
+            "/help", "/?" -> { runHelpCommand(); true }
+            "/cost" -> { runCostCommand(); true }
+            "/model", "/models" -> { runModelInfoCommand(); true }
+            "/settings", "/config" -> { runSettingsCommand(); true }
+            else -> false
+        }
+    }
+
+    private fun runClearCommand() {
+        if (session.isBusy) session.stop()
+        session.resetConversation()
+        // Wipe the visible chat. The HTMLEditorKit accepts an empty body
+        // by setting text to a minimal document; the existing CSS still
+        // applies via the editor kit's stylesheet.
+        outputPane.text = "<html><body></body></html>"
+        permissionHintShown = false
+        resetFailureDedupe()
+        appendHtml(
+            "<div class='system-msg'>↻ Session cleared — starting a fresh conversation. " +
+                "Claude no longer has the previous context.</div>"
+        )
+    }
+
+    private fun runHelpCommand() {
+        appendUserMessage("/help")
+        appendHtml(
+            "<div class='system-msg' style='color: #BCBEC4;'>" +
+                "<b>Supported slash commands:</b><br/>" +
+                "• <code>/clear</code> — drop current conversation and start fresh<br/>" +
+                "• <code>/help</code> — this list<br/>" +
+                "• <code>/cost</code> — total cost across this session's responses<br/>" +
+                "• <code>/model</code> — currently selected model<br/>" +
+                "• <code>/settings</code> — open the plugin Settings page<br/>" +
+                "<br/><i>Only these commands are supported at the moment. Anything else " +
+                "starting with <code>/</code> is blocked — Claude's CLI " +
+                "(<code>-p</code> mode) doesn't run interactive slash commands, so we " +
+                "warn instead of sending them through.</i>" +
+                "</div>"
+        )
+    }
+
+    /**
+     * Surfaces a friendly warning when the user types an unsupported
+     * slash command. The text is kept in the input area so they can
+     * edit and resend.
+     */
+    private fun showUnknownSlashWarning(trimmed: String) {
+        val firstToken = trimmed.substringBefore(' ').take(40)
+        appendHtml(
+            "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
+                "<span style='color: #D9B263;'>⚠ <code>${escapeHtml(firstToken)}</code> " +
+                "isn't a supported slash command.</span><br/>" +
+                "<span style='color: #BCBEC4;'>Currently supported: " +
+                "<code>/clear</code>, <code>/help</code>, <code>/cost</code>, " +
+                "<code>/model</code>, <code>/settings</code>. " +
+                "Other slash commands aren't sent to Claude — its <code>-p</code> mode " +
+                "treats them as session-ID lookups, not chat input. " +
+                "Edit your message to start with something other than <code>/</code>, " +
+                "or pick from the list above." +
+                "</span></div>"
+        )
+    }
+
+    private fun runSettingsCommand() {
+        appendUserMessage("/settings")
+        openClaudeSettings()
+    }
+
+    /**
+     * Wires the slash-command autocomplete popup to the input area.
+     *
+     * Trigger condition is intentionally narrow: the input must be exactly
+     * "/" with the caret at position 1. This avoids the popup nagging
+     * users typing `/Users/foo` paths or `/api/v1/...` URLs.
+     *
+     * Navigation is handled by:
+     *   - Arrow up/down on the text input → moves popup selection (we
+     *     consume the key when the popup is showing).
+     *   - Enter → picked up by [sendCurrentMessage]'s existing intercept
+     *     (it calls `slashPopup.pickSelected()` before any send logic).
+     *   - Escape → handled by the panel's existing escape-stop action,
+     *     which dismisses the popup first if it's showing.
+     *   - Focus loss → dismisses the popup (deferred so a popup mouse
+     *     click can fire pickSelected first).
+     */
+    private fun installSlashCommandPopup() {
+        val textComp = inputArea.getTextComponent()
+        val popup = SlashCommandPopup(inputArea) { command ->
+            // Use PasteAwareInputArea's wrapper, NOT the bare textPane. The
+            // wrapper flips isProgrammaticInsert so the DocumentFilter skips
+            // chip-creation logic — otherwise `/settings` matches the
+            // filename detector (settings.svg in docs/) and gets turned
+            // into a file chip mid-set, leaving the doc length out of sync
+            // with `command.length` → IllegalArgumentException on
+            // caret-position set.
+            inputArea.text = command
+            inputArea.caretPosition = command.length
+            inputArea.requestFocusInWindow()
+        }
+        slashPopup = popup
+
+        textComp.document.addDocumentListener(object : javax.swing.event.DocumentListener {
+            override fun insertUpdate(e: javax.swing.event.DocumentEvent) = recheck()
+            override fun removeUpdate(e: javax.swing.event.DocumentEvent) = recheck()
+            override fun changedUpdate(e: javax.swing.event.DocumentEvent) { /* attr changes */ }
+
+            private fun recheck() {
+                // Defer to invokeLater so the document's text is settled
+                // and caretPosition reflects the new state.
+                SwingUtilities.invokeLater {
+                    val text = try {
+                        textComp.document.getText(0, textComp.document.length)
+                    } catch (_: Exception) {
+                        return@invokeLater
+                    }
+                    val shouldShow = text == "/" && textComp.caretPosition == 1
+                    when {
+                        shouldShow && !popup.isShowing -> popup.show()
+                        !shouldShow && popup.isShowing -> popup.hide()
+                    }
+                }
+            }
+        })
+
+        textComp.addKeyListener(object : java.awt.event.KeyAdapter() {
+            override fun keyPressed(e: KeyEvent) {
+                if (!popup.isShowing) return
+                when (e.keyCode) {
+                    KeyEvent.VK_UP -> { popup.moveSelection(-1); e.consume() }
+                    KeyEvent.VK_DOWN -> { popup.moveSelection(1); e.consume() }
+                    KeyEvent.VK_TAB -> { popup.pickSelected(); e.consume() }
+                    // VK_ENTER falls through to the existing Enter handler,
+                    // which calls sendCurrentMessage → picks the popup item.
+                    // VK_ESCAPE falls through to the panel's escape-stop
+                    // action, which dismisses the popup before stop logic.
+                }
+            }
+        })
+
+        textComp.addFocusListener(object : java.awt.event.FocusAdapter() {
+            override fun focusLost(e: java.awt.event.FocusEvent) {
+                // Defer so a popup mouse click (which steals focus briefly)
+                // can fire pickSelected before we tear the popup down.
+                SwingUtilities.invokeLater {
+                    if (popup.isShowing) popup.hide()
+                }
+            }
+        })
+    }
+
+    private fun runCostCommand() {
+        appendUserMessage("/cost")
+        val sb = StringBuilder("<div class='system-msg'>")
+        if (totalCostUsd > 0) {
+            sb.append("Total cost for this session: <b>$").append(String.format("%.4f", totalCostUsd)).append("</b>")
+            if (lastTurnCostUsd > 0) {
+                sb.append(" <span style='color: #808080;'>(last turn: $")
+                sb.append(String.format("%.4f", lastTurnCostUsd))
+                sb.append(")</span>")
+            }
+        } else {
+            sb.append("<span style='color: #808080;'>No cost recorded yet — send a message first.</span>")
+        }
+        sb.append("</div>")
+        appendHtml(sb.toString())
+    }
+
+    private fun runModelInfoCommand() {
+        appendUserMessage("/model")
+        val constants = com.claudecode.ClaudeConstants
+        val effective = session.modelOverride?.takeIf { it.isNotBlank() }
+            ?: ClaudeSettings.getInstance().state.model
+        val label = if (effective.isBlank()) "Default (CLI choice)" else constants.shortModelLabel(effective)
+        val rawHint = if (effective.isBlank()) "" else " (<code>${escapeHtml(effective)}</code>)"
+        appendHtml(
+            "<div class='system-msg'>" +
+                "Currently using <b>${escapeHtml(label)}</b>$rawHint." +
+                " Click the model chip below the input to switch (per-session)." +
+                "</div>"
+        )
+    }
+
+    private fun showCliFlagWarning(text: String) {
         val firstToken = text.trim().substringBefore(' ').take(40)
         appendHtml(
             "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
                 "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
                 "<span style='color: #D9B263;'>⚠ <code>${escapeHtml(firstToken)}</code> " +
-                "looks like a Claude Code CLI command, which this plugin doesn't run.</span><br/>" +
-                "<span style='color: #BCBEC4;'>Claude Code's interactive slash-commands " +
-                "(<code>/help</code>, <code>/clear</code>, <code>/model</code>, …) and CLI flags " +
-                "(<code>--model</code>, <code>--permission-mode</code>, …) aren't available in this chat.<br/>" +
-                "Use the <b>gear icon</b> in the row below the input to open <b>Settings</b>, " +
-                "or the <b>model / permission chips</b> next to it for per-session overrides.<br/>" +
-                "Edit your message and send again to chat with Claude.</span>" +
-                "</div>"
+                "looks like a CLI flag, which this plugin doesn't run.</span><br/>" +
+                "<span style='color: #BCBEC4;'>Use the <b>gear icon</b> below the input to open " +
+                "<b>Settings</b>, or the <b>model / permission chips</b> next to it for " +
+                "per-session overrides. Edit your message and send again to chat with Claude." +
+                "</span></div>"
         )
-        // Leave the text in the input area so the user can fix it and resend.
     }
 
     fun sendPrefilled(text: String) {
@@ -553,6 +766,10 @@ class SessionPanel(
             thinkingContent = null
             activeToolName = null
             startThinkingAnimation()
+            lastTurnStartedAt = System.currentTimeMillis()
+            // Block system sleep while Claude is working so a long agentic
+            // run isn't interrupted by the user's screen lock policy.
+            com.claudecode.platform.SleepInhibitor.start()
         } else {
             stopThinkingAnimation()
             sendStopButton.text = "Send"
@@ -560,6 +777,7 @@ class SessionPanel(
             sendStopButton.toolTipText = "Send message (Enter). Shift+Enter for new line."
             statusLabel.text = "Ready"
             statusLabel.foreground = JBColor(Color(0x80, 0x80, 0x80), Color(0x80, 0x80, 0x80))
+            com.claudecode.platform.SleepInhibitor.stop()
         }
     }
 
@@ -1181,8 +1399,13 @@ class SessionPanel(
     }
 
     override fun onFinished(session: ClaudeSession, costUsd: Double?) {
+        val elapsedMs = if (lastTurnStartedAt > 0) System.currentTimeMillis() - lastTurnStartedAt else 0L
         ApplicationManager.getApplication().invokeLater {
             resetEditConsolidation()
+            if (costUsd != null) {
+                lastTurnCostUsd = costUsd
+                totalCostUsd += costUsd
+            }
             val costStr = if (costUsd != null) " | \$${String.format("%.4f", costUsd)}" else ""
             setBusyState(false)
             statusLabel.text = "Ready$costStr"
@@ -1197,7 +1420,39 @@ class SessionPanel(
             // Only after a turn finished and Claude assigned a server-side
             // session_id — without that, --resume can't reconnect.
             persistRecentSnapshot()
+
+            // If the turn took a while and the user isn't watching the chat
+            // panel, ping them with an IntelliJ balloon so they can swing
+            // back to the IDE. Short-running turns and active-window cases
+            // are silent to avoid notification fatigue.
+            maybeNotifyLongTaskComplete(elapsedMs, costUsd)
         }
+    }
+
+    /**
+     * Surfaces a non-modal IntelliJ notification when a slow request
+     * completes while the tool window isn't the active one. Stays in
+     * the Event Log either way.
+     */
+    private fun maybeNotifyLongTaskComplete(elapsedMs: Long, costUsd: Double?) {
+        if (elapsedMs < LONG_TASK_NOTIFY_THRESHOLD_MS) return
+        if (isToolWindowVisibleAndActive()) return
+        val seconds = elapsedMs / 1000
+        val displayCost = if (costUsd != null) " · $${String.format("%.4f", costUsd)}" else ""
+        val group = com.intellij.notification.NotificationGroupManager
+            .getInstance()
+            .getNotificationGroup("Claude Code Tasks") ?: return
+        group.createNotification(
+            "Claude finished — ${escapeHtml(currentDisplayName)}",
+            "Took ${seconds}s$displayCost",
+            com.intellij.notification.NotificationType.INFORMATION,
+        ).notify(project)
+    }
+
+    private fun isToolWindowVisibleAndActive(): Boolean {
+        val tw = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            .getToolWindow(com.claudecode.ClaudeConstants.TOOL_WINDOW_ID) ?: return false
+        return tw.isVisible && tw.isActive
     }
 
     /** Look up the persisted recent-chats entry for the current Claude session, if any. */
@@ -1367,6 +1622,8 @@ class SessionPanel(
         private const val FAILURE_SNIPPET_MAX = 140
         /** Bound on the post-grant retry-poll loop — ~30 invokeLater ticks. */
         private const val MAX_RETRY_POLL_ATTEMPTS = 30
+        /** A turn that took at least this long fires a desktop notification when the panel isn't focused. */
+        private const val LONG_TASK_NOTIFY_THRESHOLD_MS = 20_000L
     }
 
     private fun humanizeAgo(deltaMs: Long): String {

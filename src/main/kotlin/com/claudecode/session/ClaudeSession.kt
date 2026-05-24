@@ -584,6 +584,20 @@ class ClaudeSession(
         isBusy = false
     }
 
+    /**
+     * Drop the claude-side session ID and our in-memory message history so
+     * the next [sendMessage] starts a brand-new conversation rather than
+     * resuming this one. Used by the in-chat `/clear` slash command.
+     *
+     * Claude's own JSONL transcript under ~/.claude/projects is untouched;
+     * we just stop referencing the old session_id.
+     */
+    fun resetConversation() {
+        debug("Conversation reset (sessionId dropped, history cleared)")
+        sessionId = null
+        messages.clear()
+    }
+
     override fun dispose() {
         stop()
         listeners.clear()

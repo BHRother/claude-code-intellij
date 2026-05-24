@@ -11,6 +11,11 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.ui.popup.JBPopupListener
+import com.intellij.openapi.ui.popup.LightweightWindowEvent
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.ui.DocumentAdapter
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
@@ -30,20 +35,22 @@ import javax.swing.JPanel
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.UIManager
+import javax.swing.event.DocumentEvent
 
 /**
  * Toolbar action surfacing recent Claude chats for the current project.
  * Clicking the toolbar icon opens a popup of past sessions. Per-row UX:
  *
- *   - **Hover** highlights the row (so click targets are obvious).
+ *   - **Hover** highlights the row.
  *   - **Click the name** → opens a new tab with `claude --resume <id>`.
+ *   - **Click the star icon** → pin/unpin (pinned chats always sort first
+ *     and don't get rotated out by the per-project cap).
  *   - **Click the pencil icon** → inline rename via input dialog.
  *   - **Click the trash icon** → confirm and delete the dropdown entry
  *     (Claude's own JSONL transcript is untouched).
+ *   - **Search box at top** filters by name as you type.
  *
  * Storage lives in [RecentSessionsStore]; this file is purely a UI consumer.
- * Replacing the popup with a side panel later only requires writing a new
- * consumer of the same store APIs.
  */
 class RecentSessionsAction(private val project: Project) : AnAction(
     "Recent Sessions",
@@ -69,8 +76,11 @@ class RecentSessionsAction(private val project: Project) : AnAction(
     // ──────────────────── popup construction ────────────────────
 
     private fun showPopup(e: AnActionEvent, projectPath: String, recents: List<RecentSession>) {
+        // All known entries — the JList is a filtered view of this.
+        val allItems = recents.toMutableList()
+
         val listModel = DefaultListModel<RecentSession>().apply {
-            recents.forEach { addElement(it) }
+            allItems.forEach { addElement(it) }
         }
         val renderer = RecentItemRenderer()
         val list = JBList(listModel).apply {
@@ -81,15 +91,38 @@ class RecentSessionsAction(private val project: Project) : AnAction(
             border = JBUI.Borders.empty()
         }
 
-        val scrollPane = JBScrollPane(list).apply {
-            border = JBUI.Borders.empty()
-            // Bound the popup width — long session names get clipped with
-            // ellipsis at render time. Height grows with row count up to 10.
-            preferredSize = Dimension(380, list.preferredSize.height.coerceAtMost(320))
+        val searchField = SearchTextField().apply {
+            textEditor.toolTipText = "Filter by name"
+        }
+        // Keep the popup focused on the list when arrow-keying, but route
+        // typing into the search box. We wire focus to the list and let
+        // SearchTextField pick up keyboard events via its own subtree.
+
+        searchField.addDocumentListener(object : DocumentAdapter() {
+            override fun textChanged(e: DocumentEvent) {
+                val q = searchField.text.trim().lowercase()
+                listModel.clear()
+                val filtered = if (q.isEmpty()) allItems
+                else allItems.filter { it.name.lowercase().contains(q) }
+                filtered.forEach { listModel.addElement(it) }
+            }
+        })
+
+        val container = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(searchField, BorderLayout.NORTH)
+            add(
+                JBScrollPane(list).apply {
+                    border = JBUI.Borders.empty()
+                    preferredSize = Dimension(420, list.preferredSize.height.coerceAtMost(320))
+                },
+                BorderLayout.CENTER,
+            )
+            preferredSize = Dimension(420, 350)
         }
 
         val popup: JBPopup = JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(scrollPane, list)
+            .createComponentPopupBuilder(container, searchField.textEditor)
             .setTitle("Recent Chats")
             .setResizable(true)
             .setMovable(false)
@@ -98,7 +131,18 @@ class RecentSessionsAction(private val project: Project) : AnAction(
             .setCancelOnOtherWindowOpen(false)  // keep popup alive when Rename / Delete dialogs open
             .createPopup()
 
-        installMouseHandlers(list, renderer, listModel, projectPath, popup)
+        // In "Undock" view mode the tool window auto-hides as soon as
+        // focus leaves it (the popup counts as "elsewhere"). Re-activate
+        // the tool window when the popup closes so the chat tab the user
+        // just interacted with stays visible, instead of disappearing
+        // back to the toolbar icon.
+        popup.addListener(object : JBPopupListener {
+            override fun onClosed(event: LightweightWindowEvent) {
+                ensureToolWindowVisible()
+            }
+        })
+
+        installMouseHandlers(list, renderer, listModel, allItems, projectPath, popup)
 
         val component = e.inputEvent?.component
         if (component != null) popup.showUnderneathOf(component)
@@ -109,6 +153,7 @@ class RecentSessionsAction(private val project: Project) : AnAction(
         list: JBList<RecentSession>,
         renderer: RecentItemRenderer,
         model: DefaultListModel<RecentSession>,
+        allItems: MutableList<RecentSession>,
         projectPath: String,
         popup: JBPopup,
     ) {
@@ -123,9 +168,11 @@ class RecentSessionsAction(private val project: Project) : AnAction(
                 val item = model.getElementAt(idx)
                 when {
                     isInDeleteZone(e.point, bounds) ->
-                        handleDelete(item, model, idx, projectPath, popup)
+                        handleDelete(item, model, allItems, idx, projectPath, popup)
                     isInRenameZone(e.point, bounds) ->
-                        handleRename(item, model, idx, projectPath, popup)
+                        handleRename(item, model, allItems, idx, projectPath, popup)
+                    isInPinZone(e.point, bounds) ->
+                        handlePinToggle(item, model, allItems, idx, projectPath)
                     else -> {
                         popup.cancel()
                         resumeSession(item)
@@ -151,9 +198,6 @@ class RecentSessionsAction(private val project: Project) : AnAction(
                     renderer.hoveredIndex = newHover
                     list.repaint()
                 }
-                // All three regions (name / rename / delete) are clickable,
-                // so a single hand cursor across the whole row matches the
-                // visual hover-highlight without flicker.
                 list.cursor = Cursor.getPredefinedCursor(
                     if (onRow) Cursor.HAND_CURSOR else Cursor.DEFAULT_CURSOR
                 )
@@ -169,17 +213,36 @@ class RecentSessionsAction(private val project: Project) : AnAction(
             workDir = item.workingDirectory,
             initialSessionId = item.id,
         )
+        // The popup's onClose listener will also activate, but we call
+        // here too so the timing is deterministic — the new tab gets
+        // focus before the auto-hide kicks in.
+        ensureToolWindowVisible()
+    }
+
+    /**
+     * Force-shows and activates the Claude Code tool window. Needed because
+     * the "Undock" view mode auto-hides the tool window when focus leaves
+     * it (and the Recent dropdown counts as "elsewhere"). Without this,
+     * picking a session would open the tab but the tool window itself
+     * would disappear back to the toolbar icon.
+     *
+     * No-op when the tool window manager can't resolve the window — e.g.
+     * during shutdown.
+     */
+    private fun ensureToolWindowVisible() {
+        val tw = ToolWindowManager.getInstance(project)
+            .getToolWindow(com.claudecode.ClaudeConstants.TOOL_WINDOW_ID) ?: return
+        tw.activate(null, true, false)
     }
 
     private fun handleDelete(
         item: RecentSession,
         model: DefaultListModel<RecentSession>,
+        allItems: MutableList<RecentSession>,
         index: Int,
         projectPath: String,
         popup: JBPopup,
     ) {
-        // Quick confirm — destructive on a per-project resource is worth a
-        // single click, not silent. parentComponent inherits popup modality.
         val confirm = Messages.showYesNoDialog(
             popup.content,
             "Remove \"${item.name}\" from recent chats?\n\n" +
@@ -190,6 +253,7 @@ class RecentSessionsAction(private val project: Project) : AnAction(
         )
         if (confirm != Messages.YES) return
         RecentSessionsStore.remove(projectPath, item.id)
+        allItems.removeAll { it.id == item.id }
         if (index < model.size) model.remove(index)
         if (model.isEmpty) popup.cancel()
     }
@@ -197,6 +261,7 @@ class RecentSessionsAction(private val project: Project) : AnAction(
     private fun handleRename(
         item: RecentSession,
         model: DefaultListModel<RecentSession>,
+        allItems: MutableList<RecentSession>,
         index: Int,
         projectPath: String,
         popup: JBPopup,
@@ -210,41 +275,53 @@ class RecentSessionsAction(private val project: Project) : AnAction(
             null
         )?.trim()
         if (newName.isNullOrBlank() || newName == item.name) return
-        val updated = item.copy(name = newName)  // lastUsedAt left alone — rename isn't a "use"
+        val updated = item.copy(name = newName)
         RecentSessionsStore.touch(projectPath, updated)
+        val sourceIdx = allItems.indexOfFirst { it.id == item.id }
+        if (sourceIdx >= 0) allItems[sourceIdx] = updated
+        if (index < model.size) model.set(index, updated)
+    }
+
+    private fun handlePinToggle(
+        item: RecentSession,
+        model: DefaultListModel<RecentSession>,
+        allItems: MutableList<RecentSession>,
+        index: Int,
+        projectPath: String,
+    ) {
+        val newPinned = !item.pinned
+        RecentSessionsStore.setPinned(projectPath, item.id, newPinned)
+        val updated = item.copy(pinned = newPinned)
+        val sourceIdx = allItems.indexOfFirst { it.id == item.id }
+        if (sourceIdx >= 0) allItems[sourceIdx] = updated
         if (index < model.size) model.set(index, updated)
     }
 
     // ──────────────────── hit zones ────────────────────
 
-    /**
-     * The trailing trash icon — last [DELETE_ICON_ZONE_WIDTH] pixels of
-     * the cell.
-     */
+    /** Three trailing icons, right-aligned: [pin][rename][delete]. */
     private fun isInDeleteZone(point: Point, bounds: Rectangle): Boolean {
         val rightEdge = bounds.x + bounds.width
         return point.x >= rightEdge - DELETE_ICON_ZONE_WIDTH
     }
 
-    /**
-     * The pencil icon sits just left of the trash icon; this zone covers
-     * the next [RENAME_ICON_ZONE_WIDTH] pixels inward from the delete zone.
-     */
     private fun isInRenameZone(point: Point, bounds: Rectangle): Boolean {
         val rightEdge = bounds.x + bounds.width
-        val renameStart = rightEdge - DELETE_ICON_ZONE_WIDTH - RENAME_ICON_ZONE_WIDTH
-        val renameEnd = rightEdge - DELETE_ICON_ZONE_WIDTH
-        return point.x in renameStart until renameEnd
+        val end = rightEdge - DELETE_ICON_ZONE_WIDTH
+        val start = end - RENAME_ICON_ZONE_WIDTH
+        return point.x in start until end
+    }
+
+    private fun isInPinZone(point: Point, bounds: Rectangle): Boolean {
+        val rightEdge = bounds.x + bounds.width
+        val end = rightEdge - DELETE_ICON_ZONE_WIDTH - RENAME_ICON_ZONE_WIDTH
+        val start = end - PIN_ICON_ZONE_WIDTH
+        return point.x in start until end
     }
 
     // ──────────────────── renderer ────────────────────
 
-    /**
-     * Renderer: history icon + name (ellipsised) + trailing pencil & trash.
-     * The [hoveredIndex] field is set by the parent action's mouse-move
-     * handler; matching cells paint with the selection background so the
-     * row "follows" the cursor like Cursor's history popup.
-     */
+    /** Renderer: history icon + name + pin/rename/delete trailing icons. */
     private class RecentItemRenderer : ListCellRenderer<RecentSession> {
         @Volatile var hoveredIndex: Int = -1
 
@@ -276,16 +353,17 @@ class RecentSessionsAction(private val project: Project) : AnAction(
             }
             panel.add(nameLabel, BorderLayout.CENTER)
 
-            // Trailing area carries the two action icons. Hit detection in
-            // the mouse handler keys off pixel ranges from the right edge
-            // (see isInDeleteZone / isInRenameZone), so the visual layout
-            // here just needs to match those widths.
+            val pinIcon = if (value?.pinned == true) AllIcons.Nodes.Favorite
+                else AllIcons.Nodes.NotFavoriteOnHover
             val trailing = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
                 isOpaque = false
+                add(JLabel(pinIcon).apply {
+                    toolTipText = if (value?.pinned == true) "Unpin" else "Pin (keeps this chat at the top)"
+                })
                 add(JLabel(AllIcons.Actions.Edit).apply { toolTipText = "Rename" })
                 add(JLabel(AllIcons.Actions.Close).apply { toolTipText = "Delete" })
                 preferredSize = Dimension(
-                    RENAME_ICON_ZONE_WIDTH + DELETE_ICON_ZONE_WIDTH, 0
+                    PIN_ICON_ZONE_WIDTH + RENAME_ICON_ZONE_WIDTH + DELETE_ICON_ZONE_WIDTH, 0
                 )
             }
             panel.add(trailing, BorderLayout.EAST)
@@ -295,9 +373,11 @@ class RecentSessionsAction(private val project: Project) : AnAction(
     }
 
     companion object {
-        // Widths (px) of the two trailing icon hit zones. AllIcons buttons
-        // are 16px; we reserve extra room so the click targets are forgiving.
+        // Widths (px) of the trailing icon hit zones, right-to-left. AllIcons
+        // buttons are 16px; we reserve extra room so the click targets stay
+        // forgiving.
         private const val DELETE_ICON_ZONE_WIDTH = 28
         private const val RENAME_ICON_ZONE_WIDTH = 28
+        private const val PIN_ICON_ZONE_WIDTH = 28
     }
 }

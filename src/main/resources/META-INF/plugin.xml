@@ -196,6 +196,11 @@
         <applicationService
                 serviceImplementation="com.claudecode.settings.ClaudeSettings"/>
 
+        <!-- Balloon notifications for task completion ("Claude finished —
+             took Ns") when a long request completes while the chat panel
+             isn't focused. See SessionPanel.maybeNotifyLongTaskComplete. -->
+        <notificationGroup id="Claude Code Tasks" displayType="BALLOON"/>
+
         <!-- Fix-with-Claude intention: appears on Alt+Enter when caret is on an error/warning -->
         <intentionAction>
             <className>com.claudecode.inspection.ClaudeFixIntentionAction</className>

@@ -39,32 +39,66 @@ object RecentSessionsStore {
         File(PathManager.getConfigPath(), "claude-code/sessions.json")
     }
 
-    /** Returns up to [MAX_PER_PROJECT] sessions for the project, newest first. Empty if none. */
+    /**
+     * Returns sessions for the project, **pinned first** (each group sorted
+     * by lastUsedAt descending), then unpinned up to [MAX_PER_PROJECT]
+     * total. Pinned entries don't count toward the recency cap, so a user
+     * who pins everything will see all their pinned chats plus some
+     * recent unpinned ones.
+     */
     fun recentForProject(projectPath: String): List<RecentSession> {
         ensureLoaded()
         synchronized(lock) {
-            return (data[projectPath].orEmpty())
-                .sortedByDescending { it.lastUsedAt }
+            val all = data[projectPath].orEmpty()
+            val pinned = all.filter { it.pinned }.sortedByDescending { it.lastUsedAt }
+            val unpinned = all.filter { !it.pinned }.sortedByDescending { it.lastUsedAt }
                 .take(MAX_PER_PROJECT)
+            return pinned + unpinned
         }
     }
 
     /**
      * Upsert a session. Existing entry with the same [RecentSession.id] is
-     * replaced; the list is then capped to [MAX_PER_PROJECT] by recency.
+     * replaced; the list is then capped — pinned entries are kept
+     * regardless of recency, unpinned entries beyond [MAX_PER_PROJECT]
+     * fall off the end. If the incoming session matches an existing pinned
+     * entry, the pinned flag is preserved (callers don't have to remember
+     * to set it).
      */
     fun touch(projectPath: String, session: RecentSession) {
         if (projectPath.isBlank() || session.id.isBlank()) return
         ensureLoaded()
         synchronized(lock) {
             val list = data.getOrPut(projectPath) { mutableListOf() }
+            val existing = list.firstOrNull { it.id == session.id }
+            val toStore = if (existing != null && existing.pinned && !session.pinned)
+                session.copy(pinned = true) else session
             list.removeAll { it.id == session.id }
-            list.add(session)
-            // Cap by recency — drop oldest beyond MAX_PER_PROJECT.
-            val capped = list.sortedByDescending { it.lastUsedAt }.take(MAX_PER_PROJECT)
-            data[projectPath] = capped.toMutableList()
+            list.add(toStore)
+            // Cap unpinned only; pinned entries always survive.
+            val pinned = list.filter { it.pinned }
+            val unpinned = list.filter { !it.pinned }
+                .sortedByDescending { it.lastUsedAt }
+                .take(MAX_PER_PROJECT)
+            data[projectPath] = (pinned + unpinned).toMutableList()
         }
         scheduleSave()
+    }
+
+    /** Toggle / set the pinned flag for a single entry. No-op if not found. */
+    fun setPinned(projectPath: String, sessionId: String, pinned: Boolean) {
+        ensureLoaded()
+        var changed = false
+        synchronized(lock) {
+            val list = data[projectPath] ?: return
+            val idx = list.indexOfFirst { it.id == sessionId }
+            if (idx < 0) return
+            val existing = list[idx]
+            if (existing.pinned == pinned) return
+            list[idx] = existing.copy(pinned = pinned)
+            changed = true
+        }
+        if (changed) scheduleSave()
     }
 
     fun remove(projectPath: String, sessionId: String) {
@@ -140,6 +174,9 @@ object RecentSessionsStore {
                             // included a lastMessages array; we read only the
                             // count if present, ignore the rest.
                             messageCount = obj.get("messageCount")?.asInt ?: 0,
+                            // pinned was added in a later build — defaults to
+                            // false for entries written before this field existed.
+                            pinned = obj.get("pinned")?.asBoolean ?: false,
                         )
                     )
                 } catch (_: Exception) {

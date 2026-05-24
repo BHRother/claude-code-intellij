@@ -17,4 +17,10 @@ data class RecentSession(
     val lastUsedAt: Long,
     /** Total turns in Claude's view at last touch. Drives the "X turns" label in the dropdown. */
     val messageCount: Int,
+    /**
+     * True when the user has explicitly pinned this chat. Pinned entries
+     * always sort first in the Recent dropdown and don't get rotated out
+     * by the per-project cap (they don't count toward the recency cut).
+     */
+    val pinned: Boolean = false,
 )

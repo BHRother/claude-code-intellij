@@ -155,6 +155,7 @@ class ClaudeToolWindowManager(
                     com.intellij.openapi.actionSystem.ActionUpdateThread.EDT
             })
             add(com.claudecode.ui.RecentSessionsAction(project))
+            add(com.claudecode.ui.ExportChatAction(project))
         }
         toolWindow.setTitleActions(actionGroup.getChildActionsOrStubs().toList())
         // Drop entries past their 30-day TTL once per tool-window open.
