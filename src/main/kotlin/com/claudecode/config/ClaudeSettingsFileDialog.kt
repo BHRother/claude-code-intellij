@@ -6,7 +6,6 @@ import com.google.gson.JsonParser
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
-import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
@@ -59,7 +58,7 @@ class ClaudeSettingsFileDialog(
     }
 
     override fun createCenterPanel(): JComponent {
-        scopeCombo.renderer = SimpleListCellRenderer.create<SettingsFileScope> { label, value, _ -> label.text = value?.display ?: "" }
+        scopeCombo.renderer = com.claudecode.ui.comboTextRenderer<SettingsFileScope> { it.display }
         scopeCombo.addActionListener { if (!loading) onScopeChange() }
 
         // Form tab
