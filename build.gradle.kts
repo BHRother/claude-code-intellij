@@ -37,6 +37,10 @@ dependencies {
     intellijPlatform {
         intellijIdeaCommunity("2024.1.7")
         bundledPlugin("com.intellij.java")
+        // Bundled in all JetBrains IDEs; used (optionally, guarded at runtime)
+        // to open an interactive `claude` session for MCP OAuth. Declared
+        // optional in plugin.xml so the plugin still loads where it's disabled.
+        bundledPlugin("org.jetbrains.plugins.terminal")
         pluginVerifier()
         zipSigner()
     }

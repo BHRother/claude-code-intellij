@@ -168,6 +168,8 @@ class WelcomePanel(
                     <li>Choose your preferred Claude model (editable — type any model ID)</li>
                     <li>Configure the CLI path</li>
                     <li>Pick a permission mode: <code>acceptEdits</code> (default — file edits allowed, shell blocked), <code>bypassPermissions</code> (allow everything), or <code>plan</code> (read-only)</li>
+                    <li><b>Manage MCP servers</b> — the server icon in this panel's header (or Settings) adds/edits/removes MCP servers across project / local / user scopes, with live status and one-click authenticate for remote servers</li>
+                    <li><b>Edit settings.json</b> — the JSON-file icon in the header opens a structured (key/value) or raw editor for Claude Code's <code>settings.json</code> at project / local / global scope</li>
                 </ul>
             </div>
 

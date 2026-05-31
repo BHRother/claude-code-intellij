@@ -1,0 +1,6 @@
+<!-- Loaded only when org.jetbrains.plugins.terminal is present (optional
+     dependency). No extra extensions are needed — declaring the optional
+     dependency is what grants our classloader access to the Terminal API used
+     by McpAuthLauncher. -->
+<idea-plugin>
+</idea-plugin>

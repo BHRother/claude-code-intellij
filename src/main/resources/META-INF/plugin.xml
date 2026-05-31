@@ -65,6 +65,21 @@
         <li><b>Max agentic turns</b> — hard cap on the tool-call loop via <code>--max-turns</code>. <code>0</code> = unlimited (CLI default).</li>
     </ul>
 
+    <h3>MCP Servers</h3>
+    <ul>
+        <li><b>MCP server management UI</b> — a server icon in the tool-window header (and a button in Settings) opens a manager that <b>aggregates every MCP server Claude can see</b> for the project: project <code>.mcp.json</code>, plus the user and project-local scopes inside <code>~/.claude.json</code>. Add, edit, and remove servers across all three scopes.</li>
+        <li><b>All transports</b> — stdio (command + args + env) and remote <b>SSE / HTTP</b> (URL + headers, optional OAuth client id / callback port).</li>
+        <li><b>Live status</b> — connection/auth badges (✓ connected, ✗ failed, ⏸ pending approval, 🔒 needs authentication) from a health-checked <code>claude mcp list</code>.</li>
+        <li><b>Authenticate remote servers</b> — for servers that need OAuth, one click opens an interactive <code>claude</code> terminal on the <code>/mcp</code> screen so you can sign in; your chat sessions then use the server automatically.</li>
+        <li>All writes go through the <code>claude mcp add-json</code> / <code>remove</code> CLI, so your large, live <code>~/.claude.json</code> is never hand-edited.</li>
+    </ul>
+
+    <h3>Settings Files Editor</h3>
+    <ul>
+        <li><b>Edit Claude Code's <code>settings.json</code></b> at <b>project</b>, <b>project-local</b>, or <b>global</b> scope — a JSON-file icon in the header (and a Settings button) opens it.</li>
+        <li><b>Structured or raw</b> — a key/value <b>Form</b> tab adds/edits/removes top-level settings (with common keys suggested and typed JSON values), or switch to the <b>JSON</b> tab for raw edits. Both are validated as a JSON object before saving, and unrelated keys (including the plugin's permission grants) are preserved.</li>
+    </ul>
+
     <h3>Prerequisites</h3>
     <ul>
         <li>Install the Claude CLI: <code>npm install -g @anthropic-ai/claude-code</code> (works on macOS, Linux, and Windows)</li>
@@ -74,6 +89,17 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.0.7</h3>
+    <ul>
+        <li><b>MCP server management UI</b> — a new server icon in the tool-window header (and a <i>Manage MCP Servers…</i> button in Settings) opens a manager that aggregates every MCP server visible to the project: project <code>.mcp.json</code> plus the user and project-local scopes in <code>~/.claude.json</code> (matched by canonical path, so CLI-added local servers show up). Add, edit, remove and authenticate servers across project / local / user scopes.</li>
+        <li><b>All transports + live status</b> — stdio (command/args/env) and remote <b>SSE / HTTP</b> (URL/headers, optional OAuth client id + callback port). Connection/auth badges (✓ connected, ✗ failed, ⏸ pending approval, 🔒 needs authentication) come from a health-checked <code>claude mcp list</code>.</li>
+        <li><b>Authenticate remote MCP servers</b> — for OAuth servers, one click opens an interactive <code>claude</code> terminal and brings up the <code>/mcp</code> screen to sign in; the plugin's <code>-p</code> chat sessions then pick up the stored tokens automatically. (The CLI owns the OAuth browser+callback flow; there is no headless MCP-auth command.)</li>
+        <li><b>Safe writes</b> — all MCP mutations go through <code>claude mcp add-json</code> / <code>remove</code> rather than hand-editing <code>~/.claude.json</code>. Using <code>add-json</code> also passes the whole server definition as one JSON argument, sidestepping a variadic-flag pitfall where <code>--header</code> could swallow the URL ("missing required argument 'commandOrUrl'").</li>
+        <li><b>MCP tool permission grants in chat</b> — when Claude is blocked on an <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> call, the in-chat grant banner now fires and offers the right patterns: <i>allow this exact</i> <code>mcp__server__tool</code> vs <i>allow broad</i> <code>mcp__server</code> (every tool from that server).</li>
+        <li><b>Settings files editor</b> — a JSON-file icon in the header (and an <i>Edit settings.json…</i> button in Settings) edits Claude Code's own <code>settings.json</code> at project / project-local / global scope, with a structured key/value <b>Form</b> tab and a raw <b>JSON</b> tab. Both are validated as a JSON object before saving; unrelated keys (including the plugin's permission grants in <code>settings.local.json</code>) are preserved.</li>
+        <li><b>Paste fixes</b> — pasting a URL whose last path segment matches a project filename no longer turns it into a file chip; an absolute path that doesn't exist on disk is no longer silently re-mapped to a same-named project file; and every chip (file chips included) now expands to its underlying text on double-click.</li>
+    </ul>
+
     <h3>1.0.6</h3>
     <ul>
         <li><b>Auto-retry on permission grant</b> — clicking "Allow this exact …", "Allow all …", or "Switch to Unrestricted" on a permission-denied banner now stops the in-flight (or already-finished) request, applies the grant, and automatically resends the original prompt with the new permission in place. Previously you had to wait, click Stop, and re-send manually.</li>
@@ -178,6 +204,10 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.lang</depends>
+    <!-- Optional: enables opening an interactive `claude` terminal for MCP
+         OAuth. If the Terminal plugin is disabled, the MCP UI falls back to
+         copyable instructions, so the rest of the plugin still loads. -->
+    <depends optional="true" config-file="claude-mcp-terminal.xml">org.jetbrains.plugins.terminal</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- Tool Window -->

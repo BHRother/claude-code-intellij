@@ -232,6 +232,28 @@ class ClaudeSettingsConfigurable : Configurable {
                         .comment("When using right-click actions, send the selected code to Claude")
                 }
             }
+            group("MCP Servers") {
+                row {
+                    button("Manage MCP Servers…") {
+                        openMcpServersDialog()
+                    }
+                    comment(
+                        "Add, edit, remove and authenticate MCP servers across project / local / user " +
+                            "scopes. Also available from the Claude Code tool-window toolbar."
+                    )
+                }
+            }
+            group("Settings Files") {
+                row {
+                    button("Edit settings.json…") {
+                        openSettingsFilesDialog()
+                    }
+                    comment(
+                        "Structured (key/value) or raw-JSON editor for Claude Code's own " +
+                            "<code>settings.json</code> at project / local / global scope."
+                    )
+                }
+            }
         }
         return panel!!
     }
@@ -250,6 +272,36 @@ class ClaudeSettingsConfigurable : Configurable {
 
     override fun disposeUIResources() {
         panel = null
+    }
+
+    /**
+     * Settings is application-level (no bound project), so resolve the project
+     * to manage from the currently-open windows. The MCP CLI is cwd-relative, so
+     * we need a real project base path.
+     */
+    private fun openMcpServersDialog() {
+        val project = resolveActiveProject("Manage MCP Servers") ?: return
+        com.claudecode.mcp.McpServersDialog(project).show()
+    }
+
+    private fun openSettingsFilesDialog() {
+        val project = resolveActiveProject("Edit settings.json") ?: return
+        com.claudecode.config.ClaudeSettingsFileDialog(project, project.basePath).show()
+    }
+
+    private fun resolveActiveProject(title: String): com.intellij.openapi.project.Project? {
+        val projects = com.intellij.openapi.project.ProjectManager.getInstance().openProjects
+            .filter { !it.isDefault && !it.basePath.isNullOrBlank() }
+        return when {
+            projects.isEmpty() -> {
+                Messages.showWarningDialog("Open a project first — this is managed per project.", title)
+                null
+            }
+            projects.size == 1 -> projects.first()
+            else -> com.intellij.openapi.wm.WindowManager.getInstance().let { wm ->
+                projects.firstOrNull { wm.getFrame(it)?.isActive == true }
+            } ?: projects.first()
+        }
     }
 
     private fun autoDetectClaudePath(field: JTextField?) {
