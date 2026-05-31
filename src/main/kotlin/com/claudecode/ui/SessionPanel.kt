@@ -1178,7 +1178,11 @@ class SessionPanel(
 
         val specificPattern = com.claudecode.project.ProjectAllowlist.patternFor(safeToolName, toolInputDetail)
         val broadPattern = com.claudecode.project.ProjectAllowlist.patternFor(safeToolName, null)
-        val hasSpecific = !toolInputDetail.isNullOrBlank() && specificPattern != broadPattern
+        // "Specific" is meaningful when it differs from broad \u2014 either
+        // because we have a tool input that wraps into a (X) pattern, or
+        // because the tool is MCP and the specific/broad distinction is
+        // "full mcp__server__tool" vs "mcp__server".
+        val hasSpecific = specificPattern != broadPattern
 
         val toolLabel = " (<code>${escapeHtml(safeToolName)}</code>)"
         val detailLabel = if (!toolInputDetail.isNullOrBlank())
@@ -1190,12 +1194,12 @@ class SessionPanel(
             if (hasSpecific) {
                 append("<div style='margin-top: 2px;'>\u2022 ")
                 append("<a href=\"http://localhost/action/grant-specific/$key\">")
-                append("Allow this exact ${escapeHtml(safeToolName.lowercase())}")
+                append("Allow this exact pattern: <code>${escapeHtml(specificPattern)}</code>")
                 append("</a></div>")
             }
             append("<div style='margin-top: 2px;'>\u2022 ")
             append("<a href=\"http://localhost/action/grant-broad/$key\">")
-            append("Allow all <code>${escapeHtml(safeToolName)}</code> calls")
+            append("Allow broad pattern: <code>${escapeHtml(broadPattern)}</code>")
             append("</a></div>")
             append("<div style='margin-top: 2px;'>\u2022 ")
             append("<a href=\"http://localhost/action/grant-unrestricted/$key\">")

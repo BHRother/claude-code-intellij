@@ -73,8 +73,29 @@ object ProjectAllowlist {
         }
     }
 
-    /** Build the pattern string Claude Code expects for a given tool + input. */
+    /**
+     * Build the pattern string Claude Code expects for a given tool + input.
+     *
+     * For **MCP tools** (`mcp__<server>__<tool>`), the two scopes are:
+     *   - broad   → `mcp__<server>`           (allow every tool in that server)
+     *   - specific → `mcp__<server>__<tool>`  (this one tool only)
+     *
+     * Built-in tools follow the existing `Bash(cmd)` / `Edit(path)` etc.
+     * scheme — broad is the bare tool name, specific wraps the input.
+     */
     fun patternFor(toolName: String, exactInput: String?): String {
+        // MCP tools have their own scope-narrowing convention: drop the
+        // trailing `__<tool>` segment to allow every tool from the same
+        // MCP server. The `exactInput` field doesn't fit Claude's
+        // `Tool(arg)` syntax for MCP, so we only use it as a "specific
+        // vs broad" toggle here — broad → server, specific → full name.
+        if (toolName.startsWith("mcp__")) {
+            val parts = toolName.split("__")
+            if (parts.size >= 3 && exactInput.isNullOrBlank()) {
+                return parts.take(2).joinToString("__")
+            }
+            return toolName
+        }
         // Tools without a useful sub-pattern (or when we lack input) just use
         // the bare tool name — that allows every invocation of the tool.
         if (exactInput.isNullOrBlank()) return toolName

@@ -513,7 +513,14 @@ class ClaudeSession(
             lower.contains("requires permission") ||
             lower.contains("permission denied") ||
             lower.contains("not allowed by the current permission") ||
-            lower.contains("blocked by permission")
+            lower.contains("blocked by permission") ||
+            // MCP-style: "Claude requested permissions to use mcp__foo, but
+            // you haven't granted it yet." This wording is what Claude Code
+            // returns when an MCP tool isn't on the allow list — previously
+            // missed, so the in-chat grant banner never fired.
+            lower.contains("haven't granted") ||
+            lower.contains("requested permissions to use") ||
+            lower.contains("permission to use")
     }
 
     internal fun buildDiffSummary(tool: String, input: com.google.gson.JsonObject?): String? {
