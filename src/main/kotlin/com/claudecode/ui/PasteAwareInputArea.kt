@@ -904,6 +904,10 @@ class PasteAwareInputArea(
         if (text.contains("\n") || text.contains("\t")) return null
         if (text.contains("  ")) return null
 
+        // Web URLs (http://, https://, ftp://, …) must never become file chips,
+        // even when the last path segment matches a project filename.
+        if (looksLikeWebUrl(text)) return null
+
         val projectBase = project.basePath
 
         val looksLikePath = text.contains(File.separator) ||
@@ -919,9 +923,16 @@ class PasteAwareInputArea(
                 else -> null
             }
             if (direct != null && direct.exists()) return direct.absolutePath
+            // A path-like string (absolute path, ~path, or relative path with
+            // separators) refers only to that exact location. If it doesn't
+            // exist on disk, do NOT fall back to basename matching — otherwise
+            // an unrelated absolute path such as /elsewhere/SessionPanel.kt
+            // would be silently re-mapped to a same-named project file.
+            return null
         }
 
-        // Treat as bare filename — only meaningful if it has no spaces and looks like a file.
+        // Bare filename (no path separators) — safe to match against the
+        // project tree. Only meaningful if it has no spaces and looks like a file.
         if (text.contains(" ")) return null
         val nameCandidate = text.substringAfterLast('/').substringAfterLast(File.separatorChar)
         if (nameCandidate.isEmpty()) return null
@@ -935,6 +946,19 @@ class PasteAwareInputArea(
         if (indexed != null) return indexed
 
         return null
+    }
+
+    /**
+     * True for strings that carry a non-`file` URI scheme (http, https, ftp,
+     * ssh, …). These are web/remote references and must never be resolved to a
+     * local file, regardless of how their trailing path segment looks.
+     */
+    private fun looksLikeWebUrl(text: String): Boolean {
+        val idx = text.indexOf("://")
+        if (idx <= 0) return false
+        val scheme = text.substring(0, idx)
+        if (!scheme.all { it.isLetterOrDigit() || it == '+' || it == '.' || it == '-' }) return false
+        return !scheme.equals("file", ignoreCase = true)
     }
 
     private fun findInProjectIndex(fileName: String): String? {
@@ -1142,22 +1166,27 @@ class PasteAwareInputArea(
             })
         }
 
-        if (expandable) {
-            val expandTooltip = "Double-click to expand into the input"
-            chip.toolTipText = tooltip ?: expandTooltip
-            labelComp.toolTipText = tooltip ?: expandTooltip
-            labelComp.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            val expandListener = object : java.awt.event.MouseAdapter() {
-                override fun mouseClicked(e: java.awt.event.MouseEvent?) {
-                    if (e != null && e.clickCount >= 2 && !e.isConsumed) {
-                        expandChip(chip, content)
-                        e.consume()
-                    }
+        // Every chip — pasted content and file references alike — expands back
+        // into its underlying text on double-click. For file chips that means
+        // revealing the real @<absolute-path>; for pasted chips, the raw text.
+        val expandHint = if (expandable) {
+            "Double-click to expand into the input"
+        } else {
+            "Double-click to reveal the path"
+        }
+        if (chip.toolTipText == null) chip.toolTipText = expandHint
+        if (labelComp.toolTipText == null) labelComp.toolTipText = expandHint
+        labelComp.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        val expandListener = object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent?) {
+                if (e != null && e.clickCount >= 2 && !e.isConsumed) {
+                    expandChip(chip, content)
+                    e.consume()
                 }
             }
-            chip.addMouseListener(expandListener)
-            labelComp.addMouseListener(expandListener)
         }
+        chip.addMouseListener(expandListener)
+        labelComp.addMouseListener(expandListener)
 
         chip.add(labelComp, BorderLayout.CENTER)
         chip.add(removeBtn, BorderLayout.EAST)
