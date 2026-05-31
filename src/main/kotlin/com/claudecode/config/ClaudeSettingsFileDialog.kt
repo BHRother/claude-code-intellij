@@ -59,7 +59,7 @@ class ClaudeSettingsFileDialog(
     }
 
     override fun createCenterPanel(): JComponent {
-        scopeCombo.renderer = SimpleListCellRenderer.create("") { it.display }
+        scopeCombo.renderer = SimpleListCellRenderer.create<SettingsFileScope> { label, value, _ -> label.text = value?.display ?: "" }
         scopeCombo.addActionListener { if (!loading) onScopeChange() }
 
         // Form tab

@@ -47,8 +47,8 @@ class McpServerEditDialog(
     }
 
     override fun createCenterPanel(): JComponent {
-        val scopeRenderer = com.intellij.ui.SimpleListCellRenderer.create<McpScope>("") { it.display }
-        val transportRenderer = com.intellij.ui.SimpleListCellRenderer.create<McpTransport>("") { it.cliValue }
+        val scopeRenderer = com.intellij.ui.SimpleListCellRenderer.create<McpScope> { label, value, _ -> label.text = value?.display ?: "" }
+        val transportRenderer = com.intellij.ui.SimpleListCellRenderer.create<McpTransport> { label, value, _ -> label.text = value?.cliValue ?: "" }
         val panel = panel {
             row("Scope:") {
                 comboBox(McpScope.entries.toList(), scopeRenderer)
