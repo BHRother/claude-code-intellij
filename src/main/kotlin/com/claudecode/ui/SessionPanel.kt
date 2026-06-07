@@ -200,6 +200,9 @@ class SessionPanel(
                         href.contains("/action/open-settings") -> {
                             openClaudeSettings()
                         }
+                        href.contains("/action/open-mcp") -> {
+                            com.claudecode.mcp.McpServersDialog(project).show()
+                        }
                         href.contains("/action/swap-model/") -> {
                             val key = href.substringAfter("/action/swap-model/")
                             pendingGrants[key]?.let { applyModelSwap(key) }
@@ -527,8 +530,63 @@ class SessionPanel(
             "/cost" -> { runCostCommand(); true }
             "/model", "/models" -> { runModelInfoCommand(); true }
             "/settings", "/config" -> { runSettingsCommand(); true }
+            "/mcp", "/mcps" -> { runMcpCommand(); true }
             else -> false
         }
+    }
+
+    /**
+     * `/mcp` — list the MCP servers visible to this project (project .mcp.json
+     * plus user/local scopes in ~/.claude.json) with live connection status,
+     * and a link to the manager. Config read is instant; status is health-
+     * checked off the EDT, so we show a placeholder and swap it in when ready.
+     */
+    private fun runMcpCommand() {
+        appendUserMessage("/mcp")
+        val loadingId = "mcp-list-${copyCommandCounter++}"
+        appendHtml("<div id='$loadingId' class='system-msg' style='color:#808080;'>Checking MCP servers…</div>")
+        scrollOutputToBottom()
+        val basePath = project.basePath
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val servers = com.claudecode.mcp.McpConfigReader.read(basePath)
+            val status = if (servers.isNotEmpty()) com.claudecode.mcp.McpCli(basePath).list() else emptyMap()
+            ApplicationManager.getApplication().invokeLater {
+                replaceElementHtml(loadingId, buildMcpListHtml(loadingId, servers, status))
+            }
+        }
+    }
+
+    private fun buildMcpListHtml(
+        elementId: String,
+        servers: List<com.claudecode.mcp.McpServer>,
+        status: Map<String, com.claudecode.mcp.McpServerStatus>,
+    ): String {
+        val manage = "<a href=\"http://localhost/action/open-mcp\">Manage…</a>"
+        if (servers.isEmpty()) {
+            return "<div id='$elementId' class='system-msg'>No MCP servers configured for this project. $manage</div>"
+        }
+        val sb = StringBuilder("<div id='$elementId' class='system-msg'>")
+        sb.append("<div><b>MCP servers (${servers.size})</b> &nbsp; $manage</div>")
+        for (s in servers) {
+            val st = status[s.name]?.label ?: "—"
+            sb.append("<div style='margin-top:2px;'>• <b>${escapeHtml(s.name)}</b> ")
+            sb.append("<span style='color:#808080;'>${escapeHtml(s.scope.badge)} · ${escapeHtml(s.transport.cliValue)} · ")
+            sb.append("${escapeHtml(s.summary().take(80))}</span> · ${escapeHtml(st)}</div>")
+        }
+        sb.append("</div>")
+        return sb.toString()
+    }
+
+    /** Swap an element's HTML in place by id (falls back to appending). */
+    private fun replaceElementHtml(elementId: String, newHtml: String) {
+        val doc = outputPane.document as? javax.swing.text.html.HTMLDocument ?: run { appendHtml(newHtml); return }
+        val element = doc.getElement(elementId) ?: run { appendHtml(newHtml); return }
+        try {
+            doc.setOuterHTML(element, newHtml)
+        } catch (_: Exception) {
+            appendHtml(newHtml)
+        }
+        scrollOutputToBottom()
     }
 
     private fun runClearCommand() {
@@ -555,6 +613,7 @@ class SessionPanel(
                 "• <code>/help</code> — this list<br/>" +
                 "• <code>/cost</code> — total cost across this session's responses<br/>" +
                 "• <code>/model</code> — currently selected model<br/>" +
+                "• <code>/mcp</code> — list MCP servers + connection status<br/>" +
                 "• <code>/settings</code> — open the plugin Settings page<br/>" +
                 "<br/><i>Only these commands are supported at the moment. Anything else " +
                 "starting with <code>/</code> is blocked — Claude's CLI " +

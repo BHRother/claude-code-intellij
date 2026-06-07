@@ -46,6 +46,7 @@ class SlashCommandPopup(
         Item("/help", "Show available slash commands"),
         Item("/cost", "Show session cost so far"),
         Item("/model", "Show currently selected model"),
+        Item("/mcp", "List MCP servers + connection status"),
         Item("/settings", "Open plugin Settings"),
     )
 
