@@ -231,6 +231,15 @@ class ClaudeSettingsConfigurable : Configurable {
                         .bindSelected(settings.state::sendSelectionContext)
                         .comment("When using right-click actions, send the selected code to Claude")
                 }
+                row {
+                    checkBox("Answer Claude's questions interactively")
+                        .bindSelected(settings.state::handleQuestionsInteractively)
+                        .comment(
+                            "When Claude uses the AskUserQuestion tool, show its options as a " +
+                                "keyboard-navigable picker (↑/↓ + Enter) and clickable links. " +
+                                "Off → Claude asks the question as plain text instead."
+                        )
+                }
             }
             group("MCP Servers") {
                 row {

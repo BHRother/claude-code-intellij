@@ -34,7 +34,11 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         var appendSystemPrompt: String = "",
         // Hard cap on agentic loop turns via --max-turns. 0 = unlimited
         // (default; CLI behavior).
-        var maxAgenticTurns: Int = 0
+        var maxAgenticTurns: Int = 0,
+        // Render Claude's AskUserQuestion tool calls as an interactive,
+        // keyboard-navigable option picker. Off → the tool is disallowed and
+        // Claude asks the question as plain text (the fallback).
+        var handleQuestionsInteractively: Boolean = true
     )
 
     private var myState = State()

@@ -69,9 +69,26 @@ class SessionPanel(
     private val pendingDiffs = mutableMapOf<String, String>() // diffId -> diff HTML
     private val expandedDiffs = mutableSetOf<String>()
     private var copyCommandCounter = 0
+
+    // Reusable keyboard-navigable picker (AskUserQuestion options + permission grants).
+    private val choiceBar = ChoiceBar()
+    private var pendingAsk: PendingAsk? = null
+    private var askCounter = 0
+
+    /** One in-flight AskUserQuestion: its questions and the answers gathered so far. */
+    private inner class PendingAsk(
+        val askId: String,
+        val questions: List<com.claudecode.session.AskQuestion>,
+    ) {
+        val answers = HashMap<Int, List<String>>()
+        fun nextUnanswered(): Int? = questions.indices.firstOrNull { it !in answers }
+    }
     private var toolUseCounter = 0
     private val toolUseIdToHtmlId = mutableMapOf<String, String>()
     private var permissionHintShown = false
+    /** While a permission-grant prompt is showing, swallow Claude's redundant
+     *  "could you approve…" text and further failure badges this turn. */
+    private var permissionPromptActive = false
     /** Running total of usage cost (USD) for this panel's session. Surfaced by `/cost`. */
     private var totalCostUsd: Double = 0.0
     /** Last turn's cost (USD). Surfaced by `/cost` alongside the total. */
@@ -182,18 +199,6 @@ class SessionPanel(
                         }
                         href.contains("/action/open-settings") -> {
                             openClaudeSettings()
-                        }
-                        href.contains("/action/grant-specific/") -> {
-                            val key = href.substringAfter("/action/grant-specific/")
-                            pendingGrants[key]?.let { applyGrant(key, broad = false) }
-                        }
-                        href.contains("/action/grant-broad/") -> {
-                            val key = href.substringAfter("/action/grant-broad/")
-                            pendingGrants[key]?.let { applyGrant(key, broad = true) }
-                        }
-                        href.contains("/action/grant-unrestricted/") -> {
-                            val key = href.substringAfter("/action/grant-unrestricted/")
-                            pendingGrants[key]?.let { switchToUnrestricted(key) }
                         }
                         href.contains("/action/swap-model/") -> {
                             val key = href.substringAfter("/action/swap-model/")
@@ -307,6 +312,11 @@ class SessionPanel(
                     slashPopup!!.hide()
                     return
                 }
+                // Dismiss the picker (question or permission grant).
+                if (choiceBar.isActive) {
+                    choiceBar.clear()
+                    return
+                }
                 if (session.isBusy) {
                     session.stop()
                     appendHtml("<div class='system-msg'>Stopped.</div>")
@@ -403,6 +413,7 @@ class SessionPanel(
         val bottomPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             add(thinkingLabel)
+            add(choiceBar) // persistent picker (questions + permission grants), hidden until needed
             add(inputPanel)
             add(chipsPanel)
             add(statusHintPanel)
@@ -442,9 +453,18 @@ class SessionPanel(
             slashPopup!!.pickSelected()
             return
         }
+        // AskUserQuestion picker is open and the user hasn't typed anything:
+        // Enter submits the highlighted option. If they DID type, fall through
+        // and send their custom answer (clearing the pending question below).
+        if (choiceBar.isActive && inputArea.getFullText().isEmpty()) {
+            choiceBar.submitSelected()
+            return
+        }
 
         val text = inputArea.getFullText()
         if (text.isEmpty() || session.isBusy) return
+        // A typed message supersedes any pending question.
+        clearPendingAsk()
 
         val trimmed = text.trim()
 
@@ -643,6 +663,20 @@ class SessionPanel(
             }
         })
 
+        // AskUserQuestion picker navigation. Only active while the input is
+        // empty, so typing a custom answer (and caret movement) still works.
+        // Enter is handled by sendCurrentMessage's guard; Esc by escape-stop.
+        textComp.addKeyListener(object : java.awt.event.KeyAdapter() {
+            override fun keyPressed(e: KeyEvent) {
+                if (!choiceBar.isActive || inputArea.getFullText().isNotEmpty()) return
+                when (e.keyCode) {
+                    KeyEvent.VK_UP -> { choiceBar.moveSelection(-1); e.consume() }
+                    KeyEvent.VK_DOWN -> { choiceBar.moveSelection(1); e.consume() }
+                    KeyEvent.VK_SPACE -> { if (choiceBar.toggleSelected()) e.consume() }
+                }
+            }
+        })
+
         textComp.addFocusListener(object : java.awt.event.FocusAdapter() {
             override fun focusLost(e: java.awt.event.FocusEvent) {
                 // Defer so a popup mouse click (which steals focus briefly)
@@ -702,6 +736,7 @@ class SessionPanel(
 
     fun sendPrefilled(text: String) {
         if (session.isBusy) return
+        clearPendingAsk()
         autoNameTab(text)
         appendUserMessage(text)
         permissionHintShown = false
@@ -758,6 +793,7 @@ class SessionPanel(
 
     private fun setBusyState(busy: Boolean) {
         if (busy) {
+            permissionPromptActive = false // new turn — stop suppressing text
             sendStopButton.text = "Stop"
             sendStopButton.setVariant(AccentButton.Variant.DANGER)
             sendStopButton.toolTipText = "Stop Claude (cancel current request)"
@@ -783,6 +819,9 @@ class SessionPanel(
 
     override fun onText(session: ClaudeSession, text: String) {
         ApplicationManager.getApplication().invokeLater {
+            // A permission prompt is showing → swallow Claude's redundant
+            // "it needs your approval / could you approve…" narration.
+            if (permissionPromptActive) return@invokeLater
             resetEditConsolidation()
             stopThinkingAnimation()
             statusLabel.text = "Claude is responding..."
@@ -815,8 +854,100 @@ class SessionPanel(
         }
     }
 
+    override fun onAskUserQuestion(
+        session: ClaudeSession,
+        toolUseId: String,
+        questions: List<com.claudecode.session.AskQuestion>,
+    ) {
+        ApplicationManager.getApplication().invokeLater {
+            stopThinkingAnimation()
+            statusLabel.text = ""
+            clearPendingAsk()
+            val pending = PendingAsk("ask-${askCounter++}", questions)
+            pendingAsk = pending
+            renderAskQuestions(pending)
+            pending.nextUnanswered()?.let { showAskBarFor(it) }
+        }
+    }
+
+    /** Records the question(s) in the chat for history; the picker bar below the
+     *  input handles the interaction (keyboard + click + custom answer). */
+    private fun renderAskQuestions(pending: PendingAsk) {
+        val sb = StringBuilder("<div class='system-msg'>")
+        sb.append("<div style='color:#6897BB;'><b>Claude needs your input</b></div>")
+        pending.questions.forEach { q ->
+            sb.append("<div style='margin-top:4px;'>${escapeHtml(q.question)}</div>")
+        }
+        sb.append("</div>")
+        appendHtml(sb.toString())
+        scrollOutputToBottom()
+    }
+
+    private fun showAskBarFor(qIdx: Int) {
+        val pending = pendingAsk ?: return
+        val q = pending.questions.getOrNull(qIdx) ?: return
+        choiceBar.present(
+            title = q.question,
+            choices = q.options.map { Choice(it.label, it.description) },
+            multiSelect = q.multiSelect,
+            onSubmit = { choices -> onAskAnswered(qIdx, choices.map { it.label }) },
+            onCustom = {
+                // User chose "Something else" → focus the input so they can type
+                // a custom answer; type + Enter sends it (see sendCurrentMessage).
+                inputArea.requestFocusInWindow()
+            },
+        )
+        inputArea.requestFocusInWindow()
+    }
+
+    /** Records the answer for one question, then advances or sends the composed answer. */
+    private fun onAskAnswered(qIdx: Int, labels: List<String>) {
+        val pending = pendingAsk ?: return
+        pending.answers[qIdx] = labels
+        val next = pending.nextUnanswered()
+        if (next != null) {
+            showAskBarFor(next)
+            return
+        }
+        val msg = pending.questions.indices.joinToString("\n") { i ->
+            val q = pending.questions[i]
+            val head = q.header.ifBlank { q.question }
+            "$head: ${pending.answers[i]?.joinToString(", ").orEmpty()}"
+        }
+        clearPendingAsk()
+        appendUserMessage(msg)
+        sendAnswerWhenReady(msg)
+    }
+
+    /** Sends the user's answer once the (just-finishing) turn is idle. */
+    private fun sendAnswerWhenReady(text: String, attempt: Int = 0) {
+        if (!session.isBusy) {
+            permissionHintShown = false
+            resetFailureDedupe()
+            setBusyState(true)
+            scrollOutputToBottom()
+            session.sendMessage(text)
+            return
+        }
+        if (attempt >= MAX_RETRY_POLL_ATTEMPTS) {
+            appendHtml("<div class='system-msg' style='color:#D9B263;'>" +
+                "⚠ Couldn't send your answer automatically — send it manually.</div>")
+            return
+        }
+        ApplicationManager.getApplication().invokeLater { sendAnswerWhenReady(text, attempt + 1) }
+    }
+
+    /** Dismiss the choice bar (questions or permission grants) and any pending question. */
+    private fun clearPendingAsk() {
+        choiceBar.clear()
+        pendingAsk = null
+    }
+
     override fun onToolUse(session: ClaudeSession, tool: String, detail: String?, diffSummary: String?, diffData: Pair<String, String>?, filePath: String?) {
         ApplicationManager.getApplication().invokeLater {
+            // After a permission block we're stopping the turn; don't render
+            // chips for the further (also-blocked) commands Claude tries.
+            if (permissionPromptActive) return@invokeLater
             thinkingContent = null
             activeToolName = detail?.take(50) ?: tool
             thinkingStartTime = System.currentTimeMillis()
@@ -1083,6 +1214,16 @@ class SessionPanel(
                 return@invokeLater
             }
 
+            // Permission denials are surfaced by the grant ChoiceBar (and we stop
+            // the turn), so don't also render a redundant "\u2717 failed: requires
+            // approval" badge \u2014 nor any further failure badges while the prompt
+            // is up.
+            if (permissionPromptActive ||
+                (resultContent != null && session.looksLikePermissionDenial(resultContent))
+            ) {
+                return@invokeLater
+            }
+
             // Failure path: collapse consecutive failures of the same tool
             // into a single badge with a "(Nx)" count, and surface a snippet
             // of the actual error message so the user knows *why* it failed.
@@ -1153,106 +1294,71 @@ class SessionPanel(
             // and more reliably.
             if (permissionHintShown) return@invokeLater
             permissionHintShown = true
-            renderPermissionBlockedBanner(toolName, toolInputDetail)
+            permissionPromptActive = true
+            presentPermissionChoices(toolName, toolInputDetail)
+            // Stop the turn: in -p mode Claude would otherwise keep trying more
+            // (also-blocked) commands and asking in text. Granting re-runs the
+            // original prompt from scratch anyway, so nothing is lost by stopping.
+            if (session.isBusy) {
+                session.stop()
+                setBusyState(false)
+            }
         }
     }
 
     /**
-     * Renders the yellow "blocked by permission mode" banner with three
-     * one-click remediations:
-     *   1. Allow this exact command/path  \u2192 writes `.claude/settings.local.json`
-     *   2. Allow all <Tool> calls         \u2192 ditto, broader pattern
-     *   3. Change mode to Unrestricted    \u2192 flips the permission chip
-     *
-     * Each link carries a generated key so the click handler can look up
-     * which (tool, input) pair this banner was for, even if multiple
-     * banners stack in the same session.
+     * Presents the "blocked by permission mode" remediations on the keyboard
+     * [choiceBar]: allow this exact pattern, allow the broad pattern, switch to
+     * Unrestricted, or deny. Same actions as the old banner, now keyboard-first.
      */
-    private fun renderPermissionBlockedBanner(toolName: String?, toolInputDetail: String?) {
+    private fun presentPermissionChoices(toolName: String?, toolInputDetail: String?) {
         val currentMode = ClaudeSettings.getInstance().state.permissionMode
         val currentModeLabel = com.claudecode.ClaudeConstants.shortPermissionModeLabel(currentMode)
         val safeToolName = toolName?.takeIf { it.isNotBlank() } ?: "tool"
 
-        val key = "grant-${grantCounter++}"
-        pendingGrants[key] = safeToolName to toolInputDetail
-
         val specificPattern = com.claudecode.project.ProjectAllowlist.patternFor(safeToolName, toolInputDetail)
         val broadPattern = com.claudecode.project.ProjectAllowlist.patternFor(safeToolName, null)
-        // "Specific" is meaningful when it differs from broad \u2014 either
-        // because we have a tool input that wraps into a (X) pattern, or
-        // because the tool is MCP and the specific/broad distinction is
-        // "full mcp__server__tool" vs "mcp__server".
+        // "Specific" is meaningful when it differs from broad \u2014 either because we
+        // have a tool input that wraps into a (X) pattern, or because the tool is
+        // MCP (mcp__server__tool vs mcp__server).
         val hasSpecific = specificPattern != broadPattern
 
-        val toolLabel = " (<code>${escapeHtml(safeToolName)}</code>)"
-        val detailLabel = if (!toolInputDetail.isNullOrBlank())
-            "<div style='color: #808080; margin-top: 4px;'>Attempted: <code>${escapeHtml(toolInputDetail.take(200))}</code></div>"
-        else ""
-
-        val actions = buildString {
-            append("<div style='color: #BCBEC4; margin-top: 6px;'>Choose one:</div>")
-            if (hasSpecific) {
-                append("<div style='margin-top: 2px;'>\u2022 ")
-                append("<a href=\"http://localhost/action/grant-specific/$key\">")
-                append("Allow this exact pattern: <code>${escapeHtml(specificPattern)}</code>")
-                append("</a></div>")
-            }
-            append("<div style='margin-top: 2px;'>\u2022 ")
-            append("<a href=\"http://localhost/action/grant-broad/$key\">")
-            append("Allow broad pattern: <code>${escapeHtml(broadPattern)}</code>")
-            append("</a></div>")
-            append("<div style='margin-top: 2px;'>\u2022 ")
-            append("<a href=\"http://localhost/action/grant-unrestricted/$key\">")
-            append("Switch to Unrestricted mode")
-            append("</a></div>")
-            append("<div style='color: #707070; font-style: italic; margin-top: 6px;'>")
-            append("Allow-list edits write to <code>.claude/settings.local.json</code> in this project; ")
-            append("mode change is per-session via the permission chip.")
-            append("</div>")
-        }
-
-        // The banner gets a stable id so we can swap its HTML in-place after
-        // the user picks one of the actions \u2014 removes the "I can click again"
-        // ambiguity without leaving the warning AND a separate confirmation
-        // stacked in the chat.
-        val bannerId = bannerIdFor(key)
+        val detail = if (!toolInputDetail.isNullOrBlank())
+            " \u00b7 attempted <code>${escapeHtml(toolInputDetail.take(160))}</code>" else ""
         appendHtml(
-            "<div id='$bannerId' class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
-                "<div style='color: #D9B263;'>\u26a0 A tool$toolLabel was blocked by your current permission mode " +
-                "(<b>${escapeHtml(currentModeLabel)}</b>).</div>" +
-                detailLabel +
-                actions +
-                "</div>"
+            "<div class='system-msg' style='border-left:3px solid #D9B263; padding:4px 8px; margin:6px 0;'>" +
+                "<span style='color:#D9B263;'>\u26a0 <code>${escapeHtml(safeToolName)}</code> was blocked by your " +
+                "permission mode (<b>${escapeHtml(currentModeLabel)}</b>)$detail</span></div>"
         )
-    }
 
-    private fun bannerIdFor(key: String): String = "permblock-$key"
-
-    /**
-     * Replaces the banner's HTML in place. Used after the user picks an
-     * action so the choice is final and the action links can't be re-clicked.
-     */
-    private fun replacePermissionBanner(key: String, newInnerHtml: String, accentColor: String) {
-        val doc = outputPane.document as? HTMLDocument ?: return
-        val element = doc.getElement(bannerIdFor(key)) ?: return
-        val replacement = "<div id='${bannerIdFor(key)}' class='system-msg' " +
-            "style='margin: 6px 0; padding: 6px 10px; " +
-            "border-left: 3px solid $accentColor; background-color: #2B2D30;'>" +
-            newInnerHtml +
-            "</div>"
-        try {
-            doc.setOuterHTML(element, replacement)
-        } catch (e: Exception) {
-            // Fallback: just append below the banner \u2014 better than crashing.
-            appendHtml(replacement)
+        val choices = buildList {
+            if (hasSpecific) add(Choice("Allow this exact pattern: $specificPattern", id = "specific"))
+            add(Choice("Allow broad pattern: $broadPattern", id = "broad"))
+            add(Choice("Switch to Unrestricted mode", id = "unrestricted"))
+            add(Choice("Deny / keep blocked", id = "deny"))
         }
+        choiceBar.present(
+            title = "Allow this tool to run?",
+            choices = choices,
+            hint = "Allow-list writes to .claude/settings.local.json \u00b7 mode change is per-session",
+            onSubmit = { picked ->
+                when (picked.firstOrNull()?.id) {
+                    "specific" -> applyGrant(safeToolName, toolInputDetail, broad = false)
+                    "broad" -> applyGrant(safeToolName, toolInputDetail, broad = true)
+                    "unrestricted" -> switchSessionMode(com.claudecode.ClaudeConstants.PERMISSION_MODE_BYPASS)
+                    "deny" -> {
+                        choiceBar.clear()
+                        appendHtml("<div class='system-msg' style='color:#808080;'>Kept blocked.</div>")
+                        permissionHintShown = false
+                    }
+                }
+            },
+        )
+        inputArea.requestFocusInWindow()
     }
 
-    private fun applyGrant(key: String, broad: Boolean) {
-        val (toolName, inputDetail) = pendingGrants[key] ?: return
-        // Single-use: prevent the same banner from being applied twice.
-        pendingGrants.remove(key)
+    private fun applyGrant(toolName: String, inputDetail: String?, broad: Boolean) {
+        choiceBar.clear()
         val pattern = com.claudecode.project.ProjectAllowlist.patternFor(
             toolName,
             if (broad) null else inputDetail
@@ -1281,7 +1387,7 @@ class SessionPanel(
                 pattern
             )
             ApplicationManager.getApplication().invokeLater {
-                renderGrantResult(key, result)
+                renderGrantResult(result)
                 if (result.success && lastPrompt != null) {
                     scheduleRetryAfterGrant(lastPrompt)
                 }
@@ -1328,73 +1434,52 @@ class SessionPanel(
         }
     }
 
-    private fun renderGrantResult(key: String, result: com.claudecode.project.ProjectAllowlist.Result) {
+    private fun renderGrantResult(result: com.claudecode.project.ProjectAllowlist.Result) {
         if (!result.success) {
-            // Re-open the choice \u2014 write failed, user might want a different
-            // action (or to retry after fixing perms).
-            pendingGrants[key] = (pendingGrants[key] ?: ("tool" to null))
-            replacePermissionBanner(
-                key,
-                "<div style='color: #FF6B68;'>\u2717 Could not update " +
+            appendHtml(
+                "<div class='system-msg' style='color:#FF6B68;'>\u2717 Could not update " +
                     "<code>${escapeHtml(result.filePath)}</code>: " +
-                    "${escapeHtml(result.error ?: "unknown error")}</div>",
-                accentColor = "#FF6B68",
+                    "${escapeHtml(result.error ?: "unknown error")}</div>"
             )
+            permissionHintShown = false
             return
         }
-        // Tell IntelliJ's VFS about the on-disk change so the Project view
-        // and any open editor reflect the new content immediately \u2014 without
-        // this, the user has to manually right-click \u2192 Reload from Disk on
-        // the .claude folder. Refresh both the parent dir (so .claude itself
-        // appears the first time we create it) and the file itself.
+        // Tell IntelliJ's VFS about the on-disk change so the Project view and
+        // any open editor reflect it immediately. Refresh both the parent dir
+        // (so .claude itself appears the first time) and the file.
         if (!result.alreadyPresent) {
             val targetFile = java.io.File(result.filePath)
             val toRefresh = listOfNotNull(targetFile.parentFile, targetFile)
             LocalFileSystem.getInstance().refreshIoFiles(toRefresh, true, true, null)
         }
-
         val verb = if (result.alreadyPresent) "Already in" else "Added to"
-        // applyGrant always queues a retry when there's a last user prompt
-        // to replay; the banner copy follows that.
         val willRetry = session.messages.any { it.role == "user" }
-        val followUp = if (willRetry)
-            "Retrying your message automatically with the new permission\u2026"
-        else
-            "Send your message again \u2014 Claude will now be allowed to run it under the current permission mode."
-        replacePermissionBanner(
-            key,
-            "<div style='color: #6A8759;'>\u2713 $verb project allowlist: " +
-                "<code>${escapeHtml(result.pattern)}</code></div>" +
-                "<div style='color: #808080; margin-top: 4px;'>$followUp</div>",
-            accentColor = "#6A8759",
+        val followUp = if (willRetry) "Retrying your message\u2026" else "Send your message again."
+        appendHtml(
+            "<div class='system-msg' style='color:#6A8759;'>\u2713 $verb allowlist: " +
+                "<code>${escapeHtml(result.pattern)}</code> \u00b7 <span style='color:#808080;'>$followUp</span></div>"
         )
-        // Allow another blocked-banner to fire on the next denial.
         permissionHintShown = false
     }
 
-    private fun switchToUnrestricted(key: String) {
-        pendingGrants.remove(key)
-        // Same auto-retry semantics as applyGrant: clicking Unrestricted is
-        // an explicit retry signal regardless of whether the request is
-        // still in flight.
+    /** Override the session's permission mode (per-session), announce it, and retry the last prompt. */
+    private fun switchSessionMode(mode: String) {
+        choiceBar.clear()
+        // Explicit retry signal regardless of whether the request is in flight.
         val lastPrompt = session.messages.lastOrNull { it.role == "user" }?.content
         if (session.isBusy) {
             session.stop()
         }
-
-        val mode = com.claudecode.ClaudeConstants.PERMISSION_MODE_BYPASS
         session.permissionModeOverride = mode
-        permissionChip.updateLabel(com.claudecode.ClaudeConstants.shortPermissionModeLabel(mode))
+        val label = com.claudecode.ClaudeConstants.shortPermissionModeLabel(mode)
+        permissionChip.updateLabel(label)
         permissionChip.toolTipText = "Permission mode: " +
             com.claudecode.ClaudeConstants.describePermissionMode(mode)
-        replacePermissionBanner(
-            key,
-            "<div style='color: #6A8759;'>\u2713 Switched permission mode to <b>Unrestricted</b> " +
-                "for this session.</div>" +
-                "<div style='color: #808080; margin-top: 4px;'>" +
-                (if (lastPrompt != null) "Retrying your message\u2026" else "Send a new message to use the new mode.") +
-                " Global default is unchanged \u2014 open Settings to make it permanent.</div>",
-            accentColor = "#6A8759",
+        appendHtml(
+            "<div class='system-msg' style='color:#6A8759;'>\u2713 Switched permission mode to <b>${escapeHtml(label)}</b> " +
+                "for this session. <span style='color:#808080;'>" +
+                (if (lastPrompt != null) "Retrying your message\u2026" else "Send a new message to use it.") +
+                " Global default unchanged \u2014 open Settings to make it permanent.</span></div>"
         )
         permissionHintShown = false
         if (lastPrompt != null) {
@@ -1958,17 +2043,33 @@ class SessionPanel(
         if (!looksLikePermissionBlocked(text)) return
         permissionHintShown = true
 
-        val currentMode = ClaudeSettings.getInstance().state.permissionMode
-        val currentModeLabel = com.claudecode.ClaudeConstants.shortPermissionModeLabel(currentMode)
-        appendHtml(
-            "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
-                "<span style='color: #D9B263;'>⚠ Looks like a tool was blocked by your current permission mode " +
-                "(<b>$currentModeLabel</b>).</span><br/>" +
-                "Switch the permission chip above the input area to <b>Content Only</b> (lets file writes through) " +
-                "or <b>Unrestricted</b> (allows everything including shell commands) — then re-run your request." +
-                "</div>"
+        // Text-only fallback (no structured tool info, so no allow-list patterns):
+        // offer the mode switches on the keyboard bar.
+        val currentModeLabel = com.claudecode.ClaudeConstants.shortPermissionModeLabel(
+            ClaudeSettings.getInstance().state.permissionMode
         )
+        appendHtml(
+            "<div class='system-msg' style='border-left:3px solid #D9B263; padding:4px 8px; margin:6px 0;'>" +
+                "<span style='color:#D9B263;'>⚠ Looks like a tool was blocked by your permission mode " +
+                "(<b>${escapeHtml(currentModeLabel)}</b>).</span></div>"
+        )
+        choiceBar.present(
+            title = "Change permission mode to continue?",
+            choices = listOf(
+                Choice("Switch to Content Only (file edits allowed, shell blocked)", id = "content"),
+                Choice("Switch to Unrestricted (allow everything)", id = "unrestricted"),
+                Choice("Dismiss", id = "dismiss"),
+            ),
+            hint = "Per-session via the permission chip · global default unchanged",
+            onSubmit = { picked ->
+                when (picked.firstOrNull()?.id) {
+                    "content" -> switchSessionMode(com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS)
+                    "unrestricted" -> switchSessionMode(com.claudecode.ClaudeConstants.PERMISSION_MODE_BYPASS)
+                    "dismiss" -> { choiceBar.clear(); permissionHintShown = false }
+                }
+            },
+        )
+        inputArea.requestFocusInWindow()
     }
 
     internal fun looksLikePermissionBlocked(text: String): Boolean {
