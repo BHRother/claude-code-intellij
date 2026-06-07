@@ -1,8 +1,13 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-05-18",
+  "updatedAt": "2026-06-07",
   "source": "bundled-fallback",
   "models": [
+    {
+      "id": "claude-opus-4-8",
+      "name": "Opus 4.8",
+      "deprecated": false
+    },
     {
       "id": "claude-opus-4-7",
       "name": "Opus 4.7",
