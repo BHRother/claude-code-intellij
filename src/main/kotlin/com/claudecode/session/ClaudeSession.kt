@@ -15,6 +15,17 @@ data class ClaudeMessage(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+/** One selectable option of an AskUserQuestion question. */
+data class AskOption(val label: String, val description: String)
+
+/** One question from an AskUserQuestion tool call. */
+data class AskQuestion(
+    val question: String,
+    val header: String,
+    val options: List<AskOption>,
+    val multiSelect: Boolean,
+)
+
 interface SessionListener {
     fun onText(session: ClaudeSession, text: String)
     fun onThinking(session: ClaudeSession, thinking: String?)
@@ -36,6 +47,13 @@ interface SessionListener {
      * `.claude/settings.local.json`.
      */
     fun onPermissionBlocked(session: ClaudeSession, toolName: String?, toolInputDetail: String?) {}
+    /**
+     * Fired when Claude calls the AskUserQuestion tool. The UI renders the
+     * options as an interactive picker and sends the user's choice back as the
+     * next message. (In -p mode the CLI can't answer it in-turn, so we capture
+     * the structured options here and suppress the resulting error noise.)
+     */
+    fun onAskUserQuestion(session: ClaudeSession, toolUseId: String, questions: List<AskQuestion>) {}
     fun onFinished(session: ClaudeSession, costUsd: Double?)
     fun onError(session: ClaudeSession, error: String)
     fun onDebug(session: ClaudeSession, message: String)
@@ -73,6 +91,10 @@ class ClaudeSession(
     // Per-tool: the input field most useful as a permission-pattern argument
     // (bash command, file_path, etc.). See onPermissionBlocked.
     private var lastToolInputDetail: String? = null
+    // When an AskUserQuestion tool call is in flight, this holds its tool_use id.
+    // While set we suppress the CLI's errored tool_result for it and Claude's
+    // subsequent "dismissed" text — the UI handles the question via a picker.
+    @Volatile private var askQuestionActiveToolUseId: String? = null
 
     @Volatile
     var isBusy = false
@@ -139,6 +161,21 @@ class ClaudeSession(
             "--output-format", "stream-json",
             "--verbose"
         )
+        // New models (Opus 4.8+) reach for the AskUserQuestion tool to ask the
+        // user a clarifying question. In -p (non-interactive) mode there's no
+        // picker to answer it in-turn. When interactive handling is ON we ALLOW
+        // the tool so we receive its structured options (parseStreamLine fires
+        // onAskUserQuestion and the UI renders a picker); when OFF we disallow it
+        // so Claude asks in plain TEXT instead (the fallback).
+        // NOTE: --disallowedTools is variadic (<tools...>), so it must be
+        // followed by another flag — --permission-mode is always added below —
+        // otherwise it would swallow the trailing prompt argument.
+        if (!settings.handleQuestionsInteractively) {
+            claudeArgs.add("--disallowedTools")
+            claudeArgs.add("AskUserQuestion")
+        }
+        // New turn: clear any AskUserQuestion suppression state.
+        askQuestionActiveToolUseId = null
         // Chip-row override (per-session) takes precedence over global settings.
         val model = (modelOverride ?: settings.model)
         if (model.isNotBlank()) {
@@ -347,6 +384,9 @@ class ClaudeSession(
                     when (obj.get("type")?.asString) {
                         "text" -> {
                             val text = obj.get("text")?.asString ?: continue
+                            // Swallow Claude's "the question prompt was dismissed"
+                            // reply that follows an AskUserQuestion we're handling.
+                            if (askQuestionActiveToolUseId != null) continue
                             responseText.append(text)
                             listeners.forEach { it.onText(this, text) }
                         }
@@ -362,6 +402,19 @@ class ClaudeSession(
                             val toolName = obj.get("name")?.asString ?: "unknown"
                             val toolUseId = obj.get("id")?.asString
                             val input = obj.getAsJsonObject("input")
+                            // AskUserQuestion: capture the structured options and
+                            // hand them to the UI instead of rendering a generic
+                            // tool chip. Remember the id so we can swallow the
+                            // CLI's errored result + the "dismissed" text that
+                            // follow (the tool can't be answered in -p mode).
+                            if (toolName == "AskUserQuestion") {
+                                val questions = parseAskUserQuestion(input)
+                                if (questions.isNotEmpty() && toolUseId != null) {
+                                    askQuestionActiveToolUseId = toolUseId
+                                    listeners.forEach { it.onAskUserQuestion(this, toolUseId, questions) }
+                                    continue
+                                }
+                            }
                             val detail = extractToolDetail(toolName, input)
                             val diffSummary = buildDiffSummary(toolName, input)
                             if (toolUseId != null) {
@@ -423,7 +476,7 @@ class ClaudeSession(
                     val resultContent = contentBlock.get("content")?.let {
                         if (it.isJsonPrimitive) it.asString else null
                     }
-                    if (toolUseId != null) {
+                    if (toolUseId != null && toolUseId != askQuestionActiveToolUseId) {
                         listeners.forEach { it.onToolResult(this, toolUseId, isError, resultContent) }
                     }
                 }
@@ -449,7 +502,7 @@ class ClaudeSession(
                     val resultContent = obj.get("content")?.let {
                         if (it.isJsonPrimitive) it.asString else null
                     }
-                    if (toolUseId != null) {
+                    if (toolUseId != null && toolUseId != askQuestionActiveToolUseId) {
                         listeners.forEach { it.onToolResult(this, toolUseId, isError, resultContent) }
                     }
                     if (isError && resultContent != null && looksLikePermissionDenial(resultContent)) {
@@ -462,7 +515,12 @@ class ClaudeSession(
                 if (sid != null) sessionId = sid
 
                 val resultText = json.get("result")?.asString
-                if (resultText != null && responseText.isEmpty()) {
+                // Don't surface the final text when we handled an AskUserQuestion
+                // (it's the "dismissed" message). Clear the suppression flag now
+                // that the turn is done.
+                val suppressedForAsk = askQuestionActiveToolUseId != null
+                askQuestionActiveToolUseId = null
+                if (!suppressedForAsk && resultText != null && responseText.isEmpty()) {
                     responseText.append(resultText)
                     listeners.forEach { it.onText(this, resultText) }
                 }
@@ -521,6 +579,31 @@ class ClaudeSession(
             lower.contains("haven't granted") ||
             lower.contains("requested permissions to use") ||
             lower.contains("permission to use")
+    }
+
+    /**
+     * Parse the AskUserQuestion tool input into structured questions. Tolerant
+     * of missing/malformed fields — questions without any option are dropped.
+     */
+    internal fun parseAskUserQuestion(input: com.google.gson.JsonObject?): List<AskQuestion> {
+        fun com.google.gson.JsonElement?.str(): String? =
+            this?.takeIf { it.isJsonPrimitive }?.asString
+        val questionsArr = input?.get("questions")?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
+        val out = mutableListOf<AskQuestion>()
+        for (qEl in questionsArr) {
+            val q = qEl.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+            val question = q.get("question").str() ?: continue
+            val header = q.get("header").str() ?: ""
+            val multi = q.get("multiSelect")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+            val options = mutableListOf<AskOption>()
+            q.get("options")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { oEl ->
+                val o = oEl.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
+                val label = o.get("label").str() ?: return@forEach
+                options.add(AskOption(label, o.get("description").str() ?: ""))
+            }
+            if (options.isNotEmpty()) out.add(AskQuestion(question, header, options, multi))
+        }
+        return out
     }
 
     internal fun buildDiffSummary(tool: String, input: com.google.gson.JsonObject?): String? {
@@ -713,11 +796,55 @@ class ClaudeSession(
                 val output = proc.inputStream.bufferedReader().readText().trim()
                 val finished = proc.waitFor(5, TimeUnit.SECONDS)
                 if (finished && proc.exitValue() == 0 && output.isNotBlank()) {
+                    trace.add("Resolved via `$shell -l -c \"which $configured\"`: $output")
                     cachedResolvedPath = output
                     return output
                 }
-            } catch (_: Exception) {}
+                trace.add("`$shell -l -c \"which $configured\"` did not resolve (exit ${if (finished) proc.exitValue() else "timeout"}).")
+            } catch (e: Exception) {
+                trace.add("`which $configured` failed: ${e.message}")
+            }
+
+            // Fallback: probe known install locations directly. The login shell
+            // above is NON-interactive, so it doesn't source ~/.zshrc — where
+            // the Claude *native* installer's PATH entry (~/.local/bin) usually
+            // lives. So when the IDE is launched without a full shell PATH (Dock
+            // / Toolbox / Spotlight), `which` misses it. Probing the canonical
+            // locations recovers it. Mirrors the Windows npm-location probing.
+            probeKnownUnixLocations(configured, trace)?.let {
+                cachedResolvedPath = it
+                return it
+            }
+            trace.add("Could not resolve '$configured' via PATH or known locations; using as-is. " +
+                "Set an absolute path in Settings → Tools → Claude Code → Claude CLI path " +
+                "(e.g. ~/.local/bin/claude for the native install).")
             return configured
+        }
+
+        /**
+         * Probe the canonical Claude CLI install locations for a bare command
+         * name. Returns the first existing executable, or null. Only meaningful
+         * for a bare name (no path separator).
+         */
+        private fun probeKnownUnixLocations(name: String, trace: MutableList<String>): String? {
+            if (name.contains('/')) return null
+            val home = System.getProperty("user.home") ?: return null
+            val candidates = listOf(
+                "$home/.local/bin/$name",       // Claude native installer (current default)
+                "$home/.claude/local/$name",    // alternate native layout
+                "/opt/homebrew/bin/$name",      // Homebrew (Apple Silicon)
+                "/usr/local/bin/$name",         // Homebrew (Intel) / npm global
+                "$home/.npm-global/bin/$name",  // npm custom prefix
+            )
+            for (path in candidates) {
+                val f = File(path)
+                if (f.isFile && f.canExecute()) {
+                    trace.add("Resolved via known-location probe: $path")
+                    return path
+                }
+            }
+            trace.add("Known-location probe found no executable named '$name'.")
+            return null
         }
 
         /**
@@ -760,9 +887,14 @@ class ClaudeSession(
                 trace("`where` failed: ${e.message}")
             }
 
-            // 2. Direct probes of common npm install dirs
+            // 2. Direct probes of common install dirs — npm locations AND the
+            // native installer's ~/.local/bin (cross-platform default), which
+            // the IDE's inherited PATH often omits, same root cause as the Unix
+            // ~/.local/bin gap.
             val nameCandidates = listOf("$configured.cmd", "$configured.exe", configured)
             val dirCandidates = listOfNotNull(
+                System.getenv("USERPROFILE")?.let { "$it\\.local\\bin" },   // Claude native installer (current default)
+                System.getenv("USERPROFILE")?.let { "$it\\.claude\\local" }, // alternate native layout
                 System.getenv("APPDATA")?.let { "$it\\npm" },
                 System.getenv("LOCALAPPDATA")?.let { "$it\\npm" },
                 System.getenv("ProgramFiles")?.let { "$it\\nodejs" },
