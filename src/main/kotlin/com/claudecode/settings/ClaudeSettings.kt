@@ -38,7 +38,11 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         // Render Claude's AskUserQuestion tool calls as an interactive,
         // keyboard-navigable option picker. Off → the tool is disallowed and
         // Claude asks the question as plain text (the fallback).
-        var handleQuestionsInteractively: Boolean = true
+        var handleQuestionsInteractively: Boolean = true,
+        // Opt-in diagnostics. When on, components record what they do (e.g. the
+        // MCP OAuth PTY transcript) into an in-memory buffer the user can export
+        // from Settings for bug reports. Off → nothing is recorded. See DebugLog.
+        var debugMode: Boolean = false
     )
 
     private var myState = State()

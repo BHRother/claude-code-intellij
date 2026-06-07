@@ -20,6 +20,8 @@ class McpServerEditDialog(
     private val existing: McpServer?,
     /** Names already used per scope, to enforce uniqueness (excludes [existing]). */
     private val takenNamesByScope: Map<McpScope, Set<String>>,
+    /** When true (the server is failing/needs-auth) and No Auth is selected, show a hint. */
+    private val needsAuthHint: Boolean = false,
 ) : DialogWrapper(project, true) {
 
     var result: McpServer? = null
@@ -32,23 +34,30 @@ class McpServerEditDialog(
     private lateinit var argsArea: javax.swing.JTextArea
     private lateinit var envArea: javax.swing.JTextArea
     private lateinit var urlField: JTextField
+    private lateinit var authTypeCombo: javax.swing.JComboBox<McpAuthType>
+    private lateinit var apiTokenField: JTextField
     private lateinit var headersArea: javax.swing.JTextArea
     private lateinit var clientIdField: JTextField
+    private lateinit var clientSecretField: com.intellij.ui.components.JBPasswordField
     private lateinit var callbackPortField: JTextField
 
     private val stdioRows = mutableListOf<Row>()
-    private val remoteRows = mutableListOf<Row>()
+    private val remoteRows = mutableListOf<Row>()    // common remote rows (URL, headers, auth type)
+    private val apiKeyRows = mutableListOf<Row>()    // shown only when auth type = API Key
+    private val oauthRows = mutableListOf<Row>()     // shown only when auth type = OAuth
+    private var authHintRow: Row? = null             // "looks like it needs auth" notice (No Auth + failing)
 
     init {
         title = if (existing == null) "Add MCP Server" else "Edit MCP Server — ${existing.name}"
         setOKButtonText(if (existing == null) "Add" else "Save")
         init()
-        updateTransportVisibility()
+        updateVisibility()
     }
 
     override fun createCenterPanel(): JComponent {
         val scopeRenderer = com.claudecode.ui.comboTextRenderer<McpScope> { it.display }
         val transportRenderer = com.claudecode.ui.comboTextRenderer<McpTransport> { it.cliValue }
+        val authTypeRenderer = com.claudecode.ui.comboTextRenderer<McpAuthType> { it.display }
         val panel = panel {
             row("Scope:") {
                 comboBox(McpScope.entries.toList(), scopeRenderer)
@@ -63,7 +72,7 @@ class McpServerEditDialog(
                 comboBox(McpTransport.entries.toList(), transportRenderer)
                     .applyToComponent {
                         transportCombo = this
-                        addItemListener { updateTransportVisibility() }
+                        addItemListener { updateVisibility() }
                     }
             }
             stdioRows += row("Command:") {
@@ -87,13 +96,54 @@ class McpServerEditDialog(
             }
             remoteRows += row("Headers:") {
                 textArea().rows(3).align(Align.FILL).applyToComponent { headersArea = this }
-                    .comment("One <code>Header-Name: value</code> per line (e.g. an API key).")
+                    .comment(
+                        "Advanced — one <code>Header-Name: value</code> per line, for any auth type. An API " +
+                            "token (below, for API Key auth) is merged in as the <code>Authorization</code> header."
+                    )
             }
-            remoteRows += row("OAuth client ID:") {
+            remoteRows += row("Authorization:") {
+                comboBox(McpAuthType.entries.toList(), authTypeRenderer)
+                    .applyToComponent {
+                        authTypeCombo = this
+                        addItemListener { updateVisibility() }
+                    }
+                    .comment(
+                        "How this server authenticates. <b>API Key / Token</b> for a PAT/key (e.g. GitHub), " +
+                            "<b>OAuth</b> for browser sign-in (e.g. Sentry, Google Drive), <b>No Auth</b> for open " +
+                            "servers. The <b>Headers</b> field applies to every type."
+                    )
+            }
+            authHintRow = row("") {
+                comment(
+                    "⚠ This server <b>failed to connect</b> — it probably requires authentication. " +
+                        "Pick <b>API Key / Token</b> or <b>OAuth</b> above."
+                )
+            }
+            apiKeyRows += row("API token:") {
+                textField().columns(36).applyToComponent { apiTokenField = this }
+                    .comment(
+                        "Sent as <code>Authorization: Bearer &lt;token&gt;</code> — authenticates directly in " +
+                            "chat sessions with no OAuth flow or <code>/mcp</code> step. Use a personal access " +
+                            "token / API key (e.g. a GitHub PAT)."
+                    )
+            }
+            oauthRows += row("OAuth client ID:") {
                 textField().columns(28).applyToComponent { clientIdField = this }
-                    .comment("Optional. Client secret is entered when you authenticate, never stored here.")
+                    .comment("For OAuth providers that need a pre-registered client (e.g. Google Drive). " +
+                        "Leave blank for providers that register dynamically (e.g. Sentry).")
             }
-            remoteRows += row("OAuth callback port:") {
+            oauthRows += row("OAuth client secret:") {
+                cell(com.intellij.ui.components.JBPasswordField())
+                    .columns(28)
+                    .applyToComponent { clientSecretField = this }
+                    .comment(
+                        "<b>Required by confidential clients</b> (e.g. Google) — without it the " +
+                            "code→token exchange fails and the server stays unauthenticated even after " +
+                            "the browser says “success”. Stored securely by Claude (never in config). " +
+                            "Write-only: re-enter it whenever you edit the server, since editing re-creates it."
+                    )
+            }
+            oauthRows += row("OAuth callback port:") {
                 textField().columns(8).applyToComponent { callbackPortField = this }
                     .comment("Optional. Fixed port for the OAuth redirect, if the server pre-registers one.")
             }
@@ -111,22 +161,41 @@ class McpServerEditDialog(
             argsArea.text = existing.args.joinToString("\n")
             envArea.text = existing.env.entries.joinToString("\n") { "${it.key}=${it.value}" }
             urlField.text = existing.url
-            headersArea.text = existing.headers.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+            // Pull a Bearer Authorization header into the dedicated token field;
+            // show any other headers in the advanced area.
+            val authEntry = existing.headers.entries.firstOrNull { it.key.equals("Authorization", true) }
+            val bearer = authEntry?.value?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
+                ?.substring("Bearer ".length)?.trim()
+            apiTokenField.text = bearer.orEmpty()
+            val shownHeaders = if (bearer != null)
+                existing.headers.filterKeys { !it.equals("Authorization", true) } else existing.headers
+            headersArea.text = shownHeaders.entries.joinToString("\n") { "${it.key}: ${it.value}" }
             clientIdField.text = existing.clientId
             callbackPortField.text = existing.callbackPort?.toString().orEmpty()
+            // Auth type is inferred from the saved config (see McpAuthType.infer).
+            authTypeCombo.selectedItem = McpAuthType.infer(existing)
         } else {
             scopeCombo.selectedItem = McpScope.LOCAL
             transportCombo.selectedItem = McpTransport.STDIO
+            authTypeCombo.selectedItem = McpAuthType.API_KEY
         }
     }
 
     private fun selectedTransport(): McpTransport = transportCombo.selectedItem as? McpTransport ?: McpTransport.STDIO
 
-    private fun updateTransportVisibility() {
+    private fun selectedAuthType(): McpAuthType = authTypeCombo.selectedItem as? McpAuthType ?: McpAuthType.OAUTH
+
+    private fun updateVisibility() {
         if (stdioRows.isEmpty()) return
         val stdio = selectedTransport() == McpTransport.STDIO
         stdioRows.forEach { it.visible(stdio) }
         remoteRows.forEach { it.visible(!stdio) }
+        // Within a remote server, show only the fields for the chosen auth type.
+        val authType = if (stdio) null else selectedAuthType()
+        apiKeyRows.forEach { it.visible(authType == McpAuthType.API_KEY) }
+        oauthRows.forEach { it.visible(authType == McpAuthType.OAUTH) }
+        // Only nudge when the server is failing AND still set to No Auth.
+        authHintRow?.visible(needsAuthHint && authType == McpAuthType.NONE)
     }
 
     override fun doValidate(): ValidationInfo? {
@@ -147,9 +216,11 @@ class McpServerEditDialog(
                 return ValidationInfo("URL must start with http:// or https://.", urlField)
             }
             parseHeaders(headersArea.text)?.let { return ValidationInfo(it, headersArea) }
-            val port = callbackPortField.text.trim()
-            if (port.isNotEmpty() && port.toIntOrNull() == null) {
-                return ValidationInfo("Callback port must be a number.", callbackPortField)
+            if (selectedAuthType() == McpAuthType.OAUTH) {
+                val port = callbackPortField.text.trim()
+                if (port.isNotEmpty() && port.toIntOrNull() == null) {
+                    return ValidationInfo("Callback port must be a number.", callbackPortField)
+                }
             }
         }
         return null
@@ -169,12 +240,30 @@ class McpServerEditDialog(
                 env = parseEnvMap(envArea.text),
             )
         } else {
+            val headers = LinkedHashMap(parseHeadersMap(headersArea.text))
+            var clientId = ""
+            var clientSecret = ""
+            var callbackPort: Int? = null
+            // Only the selected auth type contributes its fields, so switching
+            // type doesn't drag along stale values from another type's inputs.
+            when (selectedAuthType()) {
+                McpAuthType.API_KEY ->
+                    apiTokenField.text.trim().takeIf { it.isNotEmpty() }
+                        ?.let { headers["Authorization"] = "Bearer $it" }
+                McpAuthType.OAUTH -> {
+                    clientId = clientIdField.text.trim()
+                    clientSecret = String(clientSecretField.password).trim()
+                    callbackPort = callbackPortField.text.trim().toIntOrNull()
+                }
+                McpAuthType.NONE -> { /* no auth fields */ }
+            }
             McpServer(
                 name = name, scope = scope, transport = transport,
                 url = urlField.text.trim(),
-                headers = parseHeadersMap(headersArea.text),
-                clientId = clientIdField.text.trim(),
-                callbackPort = callbackPortField.text.trim().toIntOrNull(),
+                headers = headers,
+                clientId = clientId,
+                clientSecret = clientSecret,
+                callbackPort = callbackPort,
             )
         }
         super.doOKAction()

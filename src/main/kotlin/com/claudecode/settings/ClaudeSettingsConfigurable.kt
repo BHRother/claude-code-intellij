@@ -241,6 +241,23 @@ class ClaudeSettingsConfigurable : Configurable {
                         )
                 }
             }
+            group("Debug") {
+                lateinit var debugCb: Cell<com.intellij.ui.components.JBCheckBox>
+                row {
+                    debugCb = checkBox("Enable debug logging")
+                        .bindSelected(settings.state::debugMode)
+                        .comment(
+                            "Records diagnostics (including the MCP authentication transcript) in " +
+                                "memory so you can export them when something misbehaves. Off by " +
+                                "default — nothing is recorded while it's off."
+                        )
+                }
+                // Export is only useful — and only shown — while debug is on.
+                row {
+                    button("Export debug log…") { exportDebugLog() }
+                    comment("Save the captured diagnostics to a file to attach to a bug report.")
+                }.visibleIf(debugCb.selected)
+            }
             group("MCP Servers") {
                 row {
                     button("Manage MCP Servers…") {
@@ -296,6 +313,39 @@ class ClaudeSettingsConfigurable : Configurable {
     private fun openSettingsFilesDialog() {
         val project = resolveActiveProject("Edit settings.json") ?: return
         com.claudecode.config.ClaudeSettingsFileDialog(project, project.basePath).show()
+    }
+
+    private fun exportDebugLog() {
+        val log = com.claudecode.diagnostics.DebugLog
+        if (log.isEmpty()) {
+            Messages.showInfoMessage(
+                "No debug data captured yet. With debug logging enabled, reproduce the issue " +
+                    "(e.g. authenticate an MCP server), then export.",
+                "Export Debug Log",
+            )
+            return
+        }
+        // Mirror ExportChatAction: build FileSaverDescriptor reflectively to keep
+        // the "scheduled for removal" constructor out of our bytecode while still
+        // using it at runtime (the non-deprecated builder isn't in our baseline).
+        val descriptor = com.intellij.openapi.fileChooser.FileSaverDescriptor::class.java
+            .getConstructor(String::class.java, String::class.java, Array<String>::class.java)
+            .newInstance("Export Debug Log", "Save the captured diagnostics to a file", arrayOf("log"))
+        val project = com.intellij.openapi.project.ProjectManager.getInstance().openProjects
+            .firstOrNull { !it.isDefault }
+        val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(java.util.Date())
+        val saved = com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+            .createSaveFileDialog(descriptor, project)
+            .save(null as com.intellij.openapi.vfs.VirtualFile?, "claude-debug-$ts.log")
+            ?: return
+        val file = saved.file
+        try {
+            file.writeText(log.snapshot())
+            com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)
+            Messages.showInfoMessage("Saved to ${file.absolutePath}", "Export Debug Log")
+        } catch (t: Throwable) {
+            Messages.showErrorDialog("Could not write ${file.absolutePath}:\n${t.message}", "Export Debug Log")
+        }
     }
 
     private fun resolveActiveProject(title: String): com.intellij.openapi.project.Project? {

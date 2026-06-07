@@ -94,6 +94,10 @@ object McpConfigReader {
     private fun parseServer(name: String, obj: JsonObject, scope: McpScope): McpServer {
         val typeHint = obj.getString("type") ?: if (obj.has("url")) "http" else "stdio"
         val transport = McpTransport.fromTypeString(typeHint)
+        // `claude mcp add --client-id/--callback-port` persists these *nested*
+        // under an "oauth" object (not at the top level), so read there first.
+        // Top-level keys are kept as a fallback for hand-edited configs.
+        val oauth = obj.getObject("oauth")
         return McpServer(
             name = name,
             scope = scope,
@@ -103,9 +107,10 @@ object McpConfigReader {
             env = obj.getStringMap("env"),
             url = obj.getString("url").orEmpty(),
             headers = obj.getStringMap("headers"),
-            clientId = obj.getString("clientId") ?: obj.getString("client_id").orEmpty(),
-            callbackPort = obj.getString("callbackPort")?.toIntOrNull()
-                ?: obj.getString("callback_port")?.toIntOrNull(),
+            clientId = (oauth?.getString("clientId") ?: oauth?.getString("client_id")
+                ?: obj.getString("clientId") ?: obj.getString("client_id")).orEmpty(),
+            callbackPort = (oauth?.getString("callbackPort") ?: oauth?.getString("callback_port")
+                ?: obj.getString("callbackPort") ?: obj.getString("callback_port"))?.toIntOrNull(),
             raw = obj,
         )
     }

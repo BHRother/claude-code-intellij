@@ -4,12 +4,12 @@
     <vendor email="brcoder.support@gmail.com" url="https://github.com/BHRother/claude-code-intellij">IntelliJ Claude Code Plugin</vendor>
 
     <description><![CDATA[
-    <h2>Claude Code for IntelliJ</h2>
+    <h2>Claude Code for JetBrains IDE</h2>
     <p>
         Bring the full power of Claude Code directly into your IDE. Chat with Claude in a side panel,
         edit code inline with natural-language instructions, fix errors with one click in the
         Alt+Enter menu, generate commit messages from your staged diff, and let Claude read, edit,
-        and create files in your project — all without leaving IntelliJ.
+        and create files in your project — all without leaving IntelliJ or your favorite IDE.
     </p>
 
     <h3>Inline AI Actions</h3>
@@ -89,6 +89,17 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.2.0</h3>
+    <ul>
+        <li><b>Reliable MCP OAuth sign-in</b> — authenticating a remote server now drives an interactive <code>claude</code> in a pseudo-TTY the plugin owns, paced off the screen's actual content (onboarding gates → <code>/mcp</code> → the right server → Authenticate) instead of typing into the IDE terminal on fixed timers. It runs hidden — you just finish in the browser claude opens — and quits claude <i>gracefully</i> so the token is flushed (fixes "the browser said success but it still needs authentication").</li>
+        <li><b>Authorization type picker</b> — the Add/Edit dialog now has an <b>Authorization</b> selector — <i>No Auth</i>, <i>API Key / Token</i>, or <i>OAuth</i> — and shows only the fields that apply (API token, or OAuth client id / secret / callback port), with <b>Headers</b> available for every type. The type is inferred from the saved config, so it always reflects what's actually stored.</li>
+        <li><b>OAuth client secret + token auth</b> — confidential OAuth providers (e.g. Google Drive) are supported via a client id + secret (the secret is handed to claude over <code>MCP_CLIENT_SECRET</code>, never written to config); token-based servers (e.g. GitHub) authenticate directly via an <code>Authorization: Bearer</code> header with no browser step.</li>
+        <li><b>Authenticate All</b> — a one-click action in the MCP manager walks every remote server that needs sign-in, one browser at a time, advancing automatically and reporting an end-of-run summary of what succeeded and what didn't (and why). A per-server watchdog guarantees one misconfigured or stuck server can never block the rest.</li>
+        <li><b>Clear auth feedback</b> — single and batch attempts now surface a result: ✓ authenticated, or a specific reason (needs an API token, sign-in not completed, menu couldn't be driven) with what to do next. Trying OAuth on a token-only server no longer fails silently.</li>
+        <li><b>Debug logging + export</b> — an opt-in <b>Debug</b> toggle in Settings records diagnostics (including the MCP auth transcript) to an in-memory buffer; an <i>Export debug log…</i> button (shown only while debug is on) saves it for bug reports. Off by default — nothing is recorded while off.</li>
+        <li><b>Bug fix: OAuth client id round-trip</b> — a pre-registered OAuth client id / callback port now reloads correctly in the Edit dialog (they're stored nested under <code>oauth</code> in the config, which the reader previously missed).</li>
+    </ul>
+
     <h3>1.1.0</h3>
     <ul>
         <li><b>MCP server management UI</b> — a new server icon in the tool-window header (and a <i>Manage MCP Servers…</i> button in Settings) opens a manager that aggregates every MCP server visible to the project: project <code>.mcp.json</code> plus the user and project-local scopes in <code>~/.claude.json</code> (matched by canonical path, so CLI-added local servers show up). Add, edit, remove and authenticate servers across project / local / user scopes.</li>

@@ -8,6 +8,7 @@ import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import java.awt.datatransfer.StringSelection
+import java.util.concurrent.TimeUnit
 
 /**
  * Kicks off authentication for a remote (sse/http) MCP server.
@@ -15,19 +16,28 @@ import java.awt.datatransfer.StringSelection
  * Why a terminal and not a button-driven browser flow: the OAuth dance (open
  * browser → localhost callback → token exchange → token storage) is owned by the
  * `claude` binary and is only reachable through the interactive `/mcp` menu —
- * there is no headless `claude mcp authenticate`. Our chat sessions run
- * `claude -p` (non-interactive) and therefore cannot perform the login, but they
- * **do** consume the stored tokens once auth is done. So we drop the user into an
- * interactive `claude` session in the project directory; after they authenticate
- * once, every later session just works.
+ * there is no headless `claude mcp authenticate`, and `claude -p` can't initiate
+ * OAuth. Our chat sessions just consume the stored tokens once auth is done.
+ * (For servers that accept a static token, the server's "API token" field skips
+ * this whole flow — see McpServerEditDialog.)
  *
- * Primary path opens the IDE's built-in Terminal (cross-platform); if the
- * Terminal plugin is unavailable we fall back to copyable instructions.
+ * The Terminal plugin API varies across IDE versions, so everything here is
+ * reflective and defensive: we treat *opening* a terminal as success and do the
+ * typing best-effort, trying multiple method names and falling back to raw TTY
+ * writes — so a post-open API mismatch never strands the user with both a blank
+ * terminal AND the manual dialog.
  */
 object McpAuthLauncher {
     private val LOG = Logger.getInstance(McpAuthLauncher::class.java)
+    private val scheduler get() = com.intellij.util.concurrency.AppExecutorUtil.getAppScheduledExecutorService()
 
     fun authenticate(project: Project, server: McpServer) {
+        // Preferred path: drive an interactive `claude` in a PTY we own, paced
+        // off its real output (McpOAuthFlow). It runs hidden — the user finishes
+        // in the browser. We only fall back to the IDE terminal when that path
+        // isn't available (Windows: no `script`) or the process can't even start.
+        if (McpOAuthFlow.isSupported() && McpOAuthFlow.authenticate(project, server)) return
+
         val workDir = project.basePath ?: System.getProperty("user.home")
         if (openInIdeTerminal(project, server, workDir)) {
             notifyNextSteps(project, server)
@@ -37,50 +47,88 @@ object McpAuthLauncher {
     }
 
     private fun openInIdeTerminal(project: Project, server: McpServer, workDir: String): Boolean {
-        return try {
-            // Called reflectively rather than via the typed Terminal API on
-            // purpose: TerminalToolWindowManager.createShellWidget is flagged
-            // "scheduled for removal" by the marketplace verifier across the
-            // supported IDE range, and the Terminal integration is already
-            // optional + guarded (we fall back to manual instructions). Going
-            // through reflection keeps the deprecated symbol out of our bytecode
-            // while preserving the behavior where the Terminal plugin is present.
-            val mgrClass = Class.forName("org.jetbrains.plugins.terminal.TerminalToolWindowManager")
-            val mgr = mgrClass.getMethod("getInstance", Project::class.java).invoke(null, project)
-            // createShellWidget(workingDirectory, tabName, requestFocus, deferSessionStartUntilUiShown)
-            val createShell = mgrClass.getMethod(
-                "createShellWidget",
-                String::class.java, String::class.java,
-                java.lang.Boolean.TYPE, java.lang.Boolean.TYPE,
-            )
-            val widget = createShell.invoke(mgr, workDir, "MCP Auth — ${server.name}", true, false)
-            val sendCommand = widget.javaClass.getMethod("sendCommandToExecute", String::class.java)
-            sendCommand.invoke(widget, "claude")
-            // Drop the user straight onto the /mcp screen. We send it after a
-            // short delay so the `claude` REPL is up and reading stdin — by then
-            // the shell has already exec'd claude, so this goes to claude's input
-            // (where /mcp opens the MCP manager), not back to the shell.
-            com.intellij.util.concurrency.AppExecutorUtil.getAppScheduledExecutorService().schedule({
-                ApplicationManager.getApplication().invokeLater {
-                    runCatching { sendCommand.invoke(widget, "/mcp") }
-                }
-            }, 1500, java.util.concurrent.TimeUnit.MILLISECONDS)
-            true
+        val widget = try {
+            createTerminal(project, workDir, "MCP Auth — ${server.name}")
         } catch (t: Throwable) {
-            // Terminal plugin disabled/absent, or API mismatch — degrade gracefully.
             LOG.info("IDE terminal unavailable for MCP auth; using manual fallback", t)
-            false
+            null
+        } ?: return false
+
+        // A terminal is open → this is success. Typing below is best-effort and
+        // must never flip us back to the manual dialog.
+        //
+        // Timing matters because the newer (2026.1+) terminal has no usable
+        // high-level send API, so we write raw to the TTY — which is dropped if
+        // the shell isn't connected yet. So: launch `claude` only once the shell
+        // is ready, then send `/mcp` and the filter as input to claude's REPL
+        // (raw, NOT shell commands) once it has had time to start.
+        scheduleAt(2000) { sendCommand(widget, "claude") }   // shell ready → launch claude
+        scheduleAt(6500) { typeRaw(widget, "/mcp\n") }        // claude REPL up → open the MCP menu
+        scheduleAt(8000) { typeRaw(widget, server.name) }     // menu rendered → filter to this server
+        return true
+    }
+
+    /** Open a terminal tab via whichever factory this IDE exposes. */
+    private fun createTerminal(project: Project, workDir: String, tab: String): Any? {
+        val mgr = Class.forName("org.jetbrains.plugins.terminal.TerminalToolWindowManager")
+            .getMethod("getInstance", Project::class.java).invoke(null, project) ?: return null
+        val b = java.lang.Boolean.TYPE
+        val attempts = listOf(
+            Triple("createShellWidget", arrayOf(String::class.java, String::class.java, b, b), arrayOf<Any?>(workDir, tab, true, false)),
+            Triple("createLocalShellWidget", arrayOf(String::class.java, String::class.java, b), arrayOf<Any?>(workDir, tab, true)),
+            Triple("createLocalShellWidget", arrayOf(String::class.java, String::class.java), arrayOf<Any?>(workDir, tab)),
+        )
+        for ((name, types, args) in attempts) {
+            try {
+                val m = mgr.javaClass.getMethod(name, *types)
+                return m.invoke(mgr, *args)
+            } catch (_: NoSuchMethodException) {
+                // try the next signature
+            }
         }
+        return null
+    }
+
+    /** Run a line in the terminal: prefer the high-level (queued) API, else raw TTY. */
+    private fun sendCommand(widget: Any, line: String) {
+        val sender = widget.javaClass.methods.firstOrNull {
+            it.name in SEND_METHODS && it.parameterCount == 1 && it.parameterTypes[0] == String::class.java
+        }
+        try {
+            if (sender != null) sender.invoke(widget, line) else typeRaw(widget, line + "\n")
+        } catch (t: Throwable) {
+            runCatching { typeRaw(widget, line + "\n") }
+        }
+    }
+
+    /**
+     * Write raw text to the terminal's TTY (no trailing Enter unless included),
+     * via TerminalWidget.getTtyConnector().write(String). Used to filter the
+     * /mcp list to a server without auto-selecting it. No-ops on any failure.
+     */
+    private fun typeRaw(widget: Any, text: String) {
+        val tty = widget.javaClass.getMethod("getTtyConnector").invoke(widget) ?: return
+        tty.javaClass.methods.firstOrNull {
+            it.name == "write" && it.parameterCount == 1 && it.parameterTypes[0] == String::class.java
+        }?.invoke(tty, text)
+    }
+
+    private fun scheduleAt(delayMs: Long, action: () -> Unit) {
+        scheduler.schedule({
+            ApplicationManager.getApplication().invokeLater { runCatching { action() } }
+        }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     private fun notifyNextSteps(project: Project, server: McpServer) {
         val group = NotificationGroupManager.getInstance().getNotificationGroup("Claude Code Tasks") ?: return
         group.createNotification(
             "Authenticate MCP server “${server.name}”",
-            "A terminal is opening <code>claude</code> and the <b>/mcp</b> menu. Select " +
-                "<b>${server.name}</b>, then <b>Authenticate</b> — your browser opens to finish sign-in. " +
-                "Afterward, new chat sessions use the server automatically. " +
-                "(If the menu didn't open, type <b>/mcp</b> once <code>claude</code> is ready.)",
+            "A terminal is opening <code>claude</code> → <b>/mcp</b>, filtered to <b>${server.name}</b>. " +
+                "Press <b>Enter</b> to select it, then <b>Authenticate</b> — your browser opens to finish " +
+                "sign-in. Afterward, new chat sessions use it automatically.<br/><br/>" +
+                "If nothing was typed, run <code>claude</code> then <code>/mcp</code> in the terminal yourself. " +
+                "Tip: many servers accept a personal access token instead — set it as the <b>API token</b> in " +
+                "the server's Edit dialog and skip OAuth entirely.",
             NotificationType.INFORMATION,
         ).notify(project)
     }
@@ -103,4 +151,6 @@ object McpAuthLauncher {
             }
         }
     }
+
+    private val SEND_METHODS = setOf("sendCommandToExecute", "executeCommand")
 }

@@ -38,9 +38,14 @@ class McpCli(private val projectBasePath: String?) {
      * flag-based `claude mcp add`. Fails if the name already exists in scope.
      */
     fun add(server: McpServer, timeoutMs: Int = MUTATE_TIMEOUT_MS): Result {
-        val needsOauthFlags = server.isRemote && (server.clientId.isNotBlank() || server.callbackPort != null)
+        val needsOauthFlags = server.isRemote &&
+            (server.clientId.isNotBlank() || server.callbackPort != null || server.clientSecret.isNotBlank())
         val args = if (needsOauthFlags) buildAddArgs(server) else buildAddJsonArgs(server)
-        return run(args, timeoutMs)
+        // The secret never travels on the command line — claude reads it from
+        // MCP_CLIENT_SECRET when `--client-secret` is present (see buildAddArgs).
+        val env = if (server.clientSecret.isNotBlank())
+            mapOf("MCP_CLIENT_SECRET" to server.clientSecret) else emptyMap()
+        return run(args, timeoutMs, env)
     }
 
     /** `claude mcp remove <name> -s <scope>`. */
@@ -65,11 +70,12 @@ class McpCli(private val projectBasePath: String?) {
 
     // ------------------------------------------------------------------
 
-    private fun run(args: List<String>, timeoutMs: Int): Result {
+    private fun run(args: List<String>, timeoutMs: Int, env: Map<String, String> = emptyMap()): Result {
         val bin = resolveClaudeBinary()
         return try {
             val cmd = GeneralCommandLine(listOf(bin) + args)
                 .withParentEnvironmentType(GeneralCommandLine.ParentEnvironmentType.CONSOLE)
+            if (env.isNotEmpty()) cmd.withEnvironment(env)
             if (!projectBasePath.isNullOrBlank()) cmd.withWorkDirectory(projectBasePath)
             val output = CapturingProcessHandler(cmd).runProcess(timeoutMs)
             if (output.isTimeout) {
@@ -159,6 +165,10 @@ class McpCli(private val projectBasePath: String?) {
                     args += listOf("-s", server.scope.cliValue, "-t", server.transport.cliValue)
                     server.headers.forEach { (k, v) -> args += listOf("-H", "$k: $v") }
                     if (server.clientId.isNotBlank()) args += listOf("--client-id", server.clientId)
+                    // Boolean flag: claude takes the value from MCP_CLIENT_SECRET
+                    // (set in add()). Only emitted when we actually have a secret,
+                    // otherwise it would block on an interactive prompt.
+                    if (server.clientSecret.isNotBlank()) args += "--client-secret"
                     server.callbackPort?.let { args += listOf("--callback-port", it.toString()) }
                 }
             }

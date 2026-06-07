@@ -69,6 +69,7 @@ class McpServersDialog(private val project: Project) : DialogWrapper(project, tr
             .setEditActionUpdater { selectedServer() != null }
             .setRemoveActionUpdater { selectedServer() != null }
             .addExtraAction(authAction())
+            .addExtraAction(authAllAction())
             .addExtraAction(refreshAction())
             .disableUpDownActions()
 
@@ -99,10 +100,72 @@ class McpServersDialog(private val project: Project) : DialogWrapper(project, tr
             ApplicationManager.getApplication().invokeLater { McpAuthLauncher.authenticate(project, s) }
         }
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = selectedServer()?.isRemote == true
+            val s = selectedServer()
+            // Offer Authenticate for any remote server that isn't token-based
+            // (API Key) and isn't already connected — that covers OAuth servers
+            // and bare/No-Auth servers that turn out to need OAuth (e.g. Sentry).
+            e.presentation.isEnabled = s != null && canTryAuthenticate(s) &&
+                statusByName[s.name] != McpServerStatus.CONNECTED
         }
         override fun getActionUpdateThread() = ActionUpdateThread.EDT
     }
+
+    /** A remote server we can attempt OAuth sign-in on: anything not configured with a token. */
+    private fun canTryAuthenticate(s: McpServer): Boolean =
+        s.isRemote && McpAuthType.infer(s) != McpAuthType.API_KEY
+
+    private fun authAllAction() = object : AnAction(
+        "Authenticate All",
+        "Authenticate every remote server that needs it, one browser at a time",
+        AllIcons.Actions.Execute,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) {
+            val pending = serversToAuthenticate()
+            if (pending.isEmpty()) {
+                Messages.showInfoMessage(project, "No remote servers currently need authentication.", "Authenticate All")
+                return
+            }
+            if (!McpOAuthFlow.isSupported()) {
+                Messages.showWarningDialog(
+                    project,
+                    "Authenticate-all uses the macOS/Linux PTY flow. On Windows, authenticate servers individually.",
+                    "Authenticate All",
+                )
+                return
+            }
+            val list = pending.joinToString("\n") { "• ${it.name}" }
+            val ok = Messages.showYesNoDialog(
+                project,
+                "Authenticate these ${pending.size} server(s), one at a time? A browser tab opens for each — " +
+                    "sign in as it appears and the next follows automatically:\n\n$list",
+                "Authenticate All", "Start", "Cancel", Messages.getQuestionIcon(),
+            )
+            if (ok != Messages.YES) return
+            // Close this (modal) dialog so the browser tabs/notifications aren't
+            // blocked; run the sequential flow on the next EDT cycle.
+            close(OK_EXIT_CODE)
+            ApplicationManager.getApplication().invokeLater { McpOAuthFlow.authenticateAll(project, pending) }
+        }
+
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = serversToAuthenticate().isNotEmpty()
+        }
+
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+    }
+
+    /**
+     * Remote servers worth (re)authenticating: ones the health check flagged as
+     * needing sign-in OR as failing to connect. `claude mcp list` reports an
+     * unauthenticated OAuth server as "✗ Failed to connect" (not "needs auth"),
+     * so FAILED must be included here or this would almost always be empty.
+     * Servers still being checked (CHECKING/UNKNOWN) are excluded until a status
+     * lands — hit Refresh and let the health check finish.
+     */
+    private fun serversToAuthenticate(): List<McpServer> =
+        servers.filter {
+            canTryAuthenticate(it) && statusByName[it.name] in setOf(McpServerStatus.NEEDS_AUTH, McpServerStatus.FAILED)
+        }
 
     private fun refreshAction() = object : AnAction("Refresh", "Re-read config and re-check connection status", AllIcons.Actions.Refresh) {
         override fun actionPerformed(e: AnActionEvent) {
@@ -122,7 +185,13 @@ class McpServersDialog(private val project: Project) : DialogWrapper(project, tr
 
     private fun onEdit() {
         val selected = selectedServer() ?: return
-        val dialog = McpServerEditDialog(project, existing = selected, takenNamesByScope = takenNames(excluding = selected))
+        val status = statusByName[selected.name]
+        val needsAuth = status == McpServerStatus.FAILED || status == McpServerStatus.NEEDS_AUTH
+        val dialog = McpServerEditDialog(
+            project, existing = selected,
+            takenNamesByScope = takenNames(excluding = selected),
+            needsAuthHint = needsAuth,
+        )
         if (dialog.showAndGet()) {
             val updated = dialog.result ?: return
             applyMutation("Saving MCP server “${updated.name}”") { cli.edit(selected, updated) }

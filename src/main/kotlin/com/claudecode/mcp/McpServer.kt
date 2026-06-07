@@ -2,6 +2,34 @@ package com.claudecode.mcp
 
 import com.google.gson.JsonObject
 
+/**
+ * How a remote MCP server authenticates. Not stored separately — it's *inferred*
+ * from the saved config (the source of truth) via [infer], so the Edit dialog and
+ * the auth buttons always reflect what's actually configured.
+ */
+enum class McpAuthType(val display: String) {
+    NONE("No Auth"),
+    API_KEY("API Key / Token"),
+    OAUTH("OAuth");
+
+    companion object {
+        /**
+         * Derive the type from what's actually configured — nothing more:
+         *   - an `Authorization` header → API Key (a token is set),
+         *   - an OAuth client config (client id / callback port) → OAuth,
+         *   - neither → No Auth.
+         * We do NOT guess OAuth from a bare config: a server that needs auth but
+         * has none configured reads as No Auth, and the UI flags "looks like it
+         * needs authentication" from its connection status instead.
+         */
+        fun infer(server: McpServer): McpAuthType = when {
+            server.headers.keys.any { it.equals("Authorization", ignoreCase = true) } -> API_KEY
+            server.clientId.isNotBlank() || server.callbackPort != null -> OAUTH
+            else -> NONE
+        }
+    }
+}
+
 /** MCP transport types, matching `claude mcp add --transport <value>`. */
 enum class McpTransport(val cliValue: String) {
     STDIO("stdio"),
@@ -40,9 +68,11 @@ data class McpServer(
     // sse / http
     val url: String = "",
     val headers: Map<String, String> = emptyMap(),
-    // optional OAuth client config (secrets are never stored in our model —
-    // they are passed straight to the CLI prompt / MCP_CLIENT_SECRET env var)
+    // optional OAuth client config. The secret is NEVER read from config (claude
+    // stores it securely); it's only populated from the Add/Edit dialog and handed
+    // to `claude mcp add` via the MCP_CLIENT_SECRET env var + --client-secret flag.
     val clientId: String = "",
+    val clientSecret: String = "",
     val callbackPort: Int? = null,
     val raw: JsonObject? = null,
 ) {

@@ -98,6 +98,28 @@ class McpConfigReaderTest {
     }
 
     @Test
+    fun `reads OAuth client id and callback port from nested oauth object`(@TempDir tmp: Path) {
+        // Mirrors exactly what `claude mcp add --client-id X --callback-port N`
+        // writes: clientId/callbackPort nested under an "oauth" object (the port
+        // as a JSON number), NOT at the server's top level.
+        val dotMcp = write(tmp.toFile(), ".mcp.json", """
+            {
+              "mcpServers": {
+                "gh": {
+                  "type": "http",
+                  "url": "https://api.example.com/mcp",
+                  "oauth": { "clientId": "MY_CLIENT_123", "callbackPort": 8910 }
+                }
+              }
+            }
+        """.trimIndent())
+        val servers = McpConfigReader.readFrom(tmp.toFile().path, dotMcp, null)
+        assertEquals(1, servers.size)
+        assertEquals("MY_CLIENT_123", servers[0].clientId)
+        assertEquals(8910, servers[0].callbackPort)
+    }
+
+    @Test
     fun `transport inferred from url when type absent`(@TempDir tmp: Path) {
         val dotMcp = write(tmp.toFile(), ".mcp.json", """
             { "mcpServers": { "remote": { "url": "https://h/mcp", "headers": { "Authorization": "Bearer x" } } } }
