@@ -89,6 +89,12 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.2.1</h3>
+    <ul>
+        <li><b>Authenticate All — live progress &amp; faster advancement</b> — a non-modal panel now lists every queued server (waiting / authenticating / done / failed / skipped), shows the current server with a <b>countdown</b> of how long it'll wait, and lets you <b>Skip current</b> or <b>Remove</b> a pending server to avoid the wait. Each server advances the <i>moment it connects</i>: instead of waiting out a timeout while scraping the terminal, the flow polls <code>claude mcp list</code> (the same live health check as Refresh) and proceeds as soon as the server reports connected, then tears down promptly. One stuck or misconfigured server can no longer block the rest.</li>
+        <li><b>Fix: no false permission prompts in Unrestricted mode</b> — when running Unrestricted (bypass permissions), a failing tool no longer triggers a bogus "blocked by your permission mode" message or an offer to allow the command / switch to a mode you're already in — the real error is shown instead. The permission UI now keys off the session's <i>effective</i> mode (the per-session chip override, not just the global default).</li>
+    </ul>
+
     <h3>1.2.0</h3>
     <ul>
         <li><b>Reliable MCP OAuth sign-in</b> — authenticating a remote server now drives an interactive <code>claude</code> in a pseudo-TTY the plugin owns, paced off the screen's actual content (onboarding gates → <code>/mcp</code> → the right server → Authenticate) instead of typing into the IDE terminal on fixed timers. It runs hidden — you just finish in the browser claude opens — and quits claude <i>gracefully</i> so the token is flushed (fixes "the browser said success but it still needs authentication").</li>

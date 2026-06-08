@@ -1278,7 +1278,8 @@ class SessionPanel(
             // approval" badge \u2014 nor any further failure badges while the prompt
             // is up.
             if (permissionPromptActive ||
-                (resultContent != null && session.looksLikePermissionDenial(resultContent))
+                (!session.isUnrestricted() && resultContent != null &&
+                    session.looksLikePermissionDenial(resultContent))
             ) {
                 return@invokeLater
             }
@@ -1350,8 +1351,8 @@ class SessionPanel(
             // Fire the hint immediately based on the structured tool_result \u2014
             // don't wait for the model to produce natural-language text. This
             // is the same UI as maybeShowPermissionHint but triggered earlier
-            // and more reliably.
-            if (permissionHintShown) return@invokeLater
+            // and more reliably. Never in Unrestricted mode — nothing is blocked.
+            if (permissionHintShown || session.isUnrestricted()) return@invokeLater
             permissionHintShown = true
             permissionPromptActive = true
             presentPermissionChoices(toolName, toolInputDetail)
@@ -1371,7 +1372,7 @@ class SessionPanel(
      * Unrestricted, or deny. Same actions as the old banner, now keyboard-first.
      */
     private fun presentPermissionChoices(toolName: String?, toolInputDetail: String?) {
-        val currentMode = ClaudeSettings.getInstance().state.permissionMode
+        val currentMode = session.effectivePermissionMode()
         val currentModeLabel = com.claudecode.ClaudeConstants.shortPermissionModeLabel(currentMode)
         val safeToolName = toolName?.takeIf { it.isNotBlank() } ?: "tool"
 
@@ -2099,13 +2100,16 @@ class SessionPanel(
 
     private fun maybeShowPermissionHint(text: String) {
         if (permissionHintShown) return
+        // In Unrestricted mode the CLI can't block a tool, so a "blocked"-looking
+        // message is a false positive — don't nag about changing permissions.
+        if (session.isUnrestricted()) return
         if (!looksLikePermissionBlocked(text)) return
         permissionHintShown = true
 
         // Text-only fallback (no structured tool info, so no allow-list patterns):
         // offer the mode switches on the keyboard bar.
         val currentModeLabel = com.claudecode.ClaudeConstants.shortPermissionModeLabel(
-            ClaudeSettings.getInstance().state.permissionMode
+            session.effectivePermissionMode()
         )
         appendHtml(
             "<div class='system-msg' style='border-left:3px solid #D9B263; padding:4px 8px; margin:6px 0;'>" +

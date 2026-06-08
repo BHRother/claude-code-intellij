@@ -106,6 +106,20 @@ class ClaudeSession(
     @Volatile var modelOverride: String? = null
     @Volatile var permissionModeOverride: String? = null
 
+    /** The permission mode that actually applies to this session (override, else global default). */
+    fun effectivePermissionMode(): String =
+        (permissionModeOverride ?: ClaudeSettings.getInstance().state.permissionMode)
+            .ifBlank { com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS }
+
+    /**
+     * True when running Unrestricted (bypassPermissions). In this mode the CLI
+     * can't permission-block a tool, so any "permission denied"-looking failure is
+     * a false positive (a real error of some other kind) — we must NOT show the
+     * grant/permission UI or offer to switch to a mode we're already in.
+     */
+    fun isUnrestricted(): Boolean =
+        effectivePermissionMode() == com.claudecode.ClaudeConstants.PERMISSION_MODE_BYPASS
+
     fun addListener(listener: SessionListener) {
         listeners.add(listener)
     }
@@ -505,7 +519,11 @@ class ClaudeSession(
                     if (toolUseId != null && toolUseId != askQuestionActiveToolUseId) {
                         listeners.forEach { it.onToolResult(this, toolUseId, isError, resultContent) }
                     }
-                    if (isError && resultContent != null && looksLikePermissionDenial(resultContent)) {
+                    // Skip in Unrestricted mode: a tool can't be permission-blocked
+                    // there, so a denial-looking failure is a real (other) error.
+                    if (isError && resultContent != null && !isUnrestricted() &&
+                        looksLikePermissionDenial(resultContent)
+                    ) {
                         listeners.forEach { it.onPermissionBlocked(this, lastToolName, lastToolInputDetail) }
                     }
                 }

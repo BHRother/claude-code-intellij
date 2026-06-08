@@ -45,6 +45,9 @@ object McpOAuthFlow {
     /** True when this platform can host the own-PTY flow (needs `script`). */
     fun isSupported(): Boolean = !ClaudeSession.isWindows()
 
+    /** Max time we wait for a single server's sign-in before giving up. */
+    const val SIGN_IN_TIMEOUT_MS = 180_000L
+
     /** The result of one server's auth attempt — drives the feedback we show. */
     enum class AuthOutcome(val ok: Boolean, val summary: String) {
         SUCCESS(true, "authenticated"),
@@ -53,7 +56,48 @@ object McpOAuthFlow {
         NOT_IN_LIST(false, "not found in the /mcp list"),
         NO_AUTH_ACTION(false, "no Authenticate option offered"),
         TIMED_OUT(false, "sign-in wasn’t completed in time"),
+        SKIPPED(false, "skipped"),
         ERROR(false, "unexpected error"),
+    }
+
+    /** A running auth attempt that can be cancelled (e.g. "Skip" in the batch UI). */
+    interface AuthHandle {
+        fun cancel()
+    }
+
+    /**
+     * Spawn the PTY flow for one server and return a cancellable handle (or null
+     * if it couldn't even start — in which case [onFinish] has already fired
+     * ERROR). Shared by the single [authenticate] path and the batch session.
+     */
+    fun spawnAuth(project: Project, server: McpServer, onFinish: (AuthOutcome) -> Unit): AuthHandle? {
+        if (!isSupported()) { onFinish(AuthOutcome.ERROR); return null }
+        val workDir = project.basePath ?: System.getProperty("user.home")
+        val configured = ClaudeSettings.getInstance().state.claudePath
+            .ifBlank { com.claudecode.ClaudeConstants.DEFAULT_CLI_PATH }
+        val claudePath = ClaudeSession.resolveClaudePathPublic(configured)
+        val command = buildCommand(claudePath)
+        DebugLog.log("mcp-oauth", "authenticate '${server.name}' (${server.transport.cliValue}) in $workDir")
+        DebugLog.log("mcp-oauth", "command: ${command.joinToString(" ")}")
+
+        val process = try {
+            val pb = ProcessBuilder(command)
+                .directory(File(workDir))
+                .redirectErrorStream(true)
+            ClaudeSession.resolveShellPathPublic()?.let { pb.environment()["PATH"] = it }
+            pb.environment()["TERM"] = "xterm-256color"
+            pb.start()
+        } catch (t: Throwable) {
+            LOG.info("MCP OAuth PTY failed to start; caller will fall back", t)
+            DebugLog.log("mcp-oauth", "spawn failed: ${t.message}")
+            onFinish(AuthOutcome.ERROR)
+            return null
+        }
+        val driver = Driver(server, workDir, process, onFinish)
+        driver.start()
+        return object : AuthHandle {
+            override fun cancel() = driver.cancel()
+        }
     }
 
     /**
@@ -69,37 +113,12 @@ object McpOAuthFlow {
      */
     fun authenticate(project: Project, server: McpServer, onFinish: ((AuthOutcome) -> Unit)? = null): Boolean {
         if (!isSupported()) { onFinish?.invoke(AuthOutcome.ERROR); return false }
-        val workDir = project.basePath ?: System.getProperty("user.home")
-        val configured = ClaudeSettings.getInstance().state.claudePath
-            .ifBlank { com.claudecode.ClaudeConstants.DEFAULT_CLI_PATH }
-        val claudePath = ClaudeSession.resolveClaudePathPublic(configured)
-        val command = buildCommand(claudePath)
-
-        DebugLog.log("mcp-oauth", "authenticate '${server.name}' (${server.transport.cliValue}) in $workDir")
-        DebugLog.log("mcp-oauth", "command: ${command.joinToString(" ")}")
-
-        val process = try {
-            val pb = ProcessBuilder(command)
-                .directory(File(workDir))
-                .redirectErrorStream(true)
-            ClaudeSession.resolveShellPathPublic()?.let { pb.environment()["PATH"] = it }
-            // A real terminal type so claude renders/behaves interactively (the
-            // PTY itself is what makes it interactive; TERM just picks the caps).
-            pb.environment()["TERM"] = "xterm-256color"
-            pb.start()
-        } catch (t: Throwable) {
-            LOG.info("MCP OAuth PTY failed to start; caller will fall back", t)
-            DebugLog.log("mcp-oauth", "spawn failed: ${t.message}")
-            onFinish?.invoke(AuthOutcome.ERROR)
-            return false
-        }
-
         val isBatch = onFinish != null
         val reporter = onFinish ?: { outcome -> reportSingle(project, server, outcome) }
-        Driver(server, process, reporter).start()
+        val handle = spawnAuth(project, server, reporter)
         // The batch shows its own per-step progress, so skip the per-server banner.
-        if (!isBatch) notifyStarted(project, server)
-        return true
+        if (handle != null && !isBatch) notifyStarted(project, server)
+        return handle != null
     }
 
     /** Notify the user of a single (non-batch) auth attempt's result. */
@@ -146,48 +165,11 @@ object McpOAuthFlow {
         val queue = servers.filter { it.isRemote }
         if (queue.isEmpty() || !isSupported()) return
         DebugLog.log("mcp-oauth", "authenticate-all: ${queue.size} servers: ${queue.joinToString { it.name }}")
-        authNext(project, queue, index = 0, results = mutableListOf())
-    }
-
-    private fun authNext(
-        project: Project,
-        queue: List<McpServer>,
-        index: Int,
-        results: MutableList<Pair<String, AuthOutcome>>,
-    ) {
-        if (index >= queue.size) {
-            notifyBatchSummary(project, results)
-            return
-        }
-        val server = queue[index]
-        notify(project, "Authenticating ${index + 1} of ${queue.size}",
-            "<b>${server.name}</b> — sign in when its browser tab opens; the next follows automatically.",
-            NotificationType.INFORMATION)
-        // onFinish fires exactly once per call (spawn failure included), and the
-        // previous process has already exited by then (finish() waits for a
-        // graceful exit), so advancing from the callback is the single source of
-        // truth. We record each server's outcome for the end-of-run summary.
-        authenticate(project, server) { outcome ->
-            results.add(server.name to outcome)
-            authNext(project, queue, index + 1, results)
-        }
-    }
-
-    /** End-of-run report: what authenticated, what didn't, and why. */
-    private fun notifyBatchSummary(project: Project, results: List<Pair<String, AuthOutcome>>) {
-        val ok = results.filter { it.second.ok }.map { it.first }
-        val failed = results.filter { !it.second.ok }
-        val body = buildString {
-            if (ok.isNotEmpty()) append("✓ Authenticated: ${ok.joinToString(", ")}<br/>")
-            if (failed.isNotEmpty()) {
-                append("✗ Not authenticated:<br/>")
-                failed.forEach { append("&nbsp;&nbsp;• <b>${it.first}</b> — ${it.second.summary}<br/>") }
-                append("<br/>Token-based servers (e.g. GitHub) need an <b>API token</b> set in Edit; " +
-                    "enable <b>Settings → Debug</b> for details on menu failures.")
-            }
-        }
-        notify(project, "Authenticate all — ${ok.size}/${results.size} authenticated", body,
-            if (failed.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING)
+        // A live, non-modal panel drives the queue and shows progress / lets the
+        // user skip or drop servers — see McpAuthAllSession / McpAuthAllDialog.
+        val session = McpAuthAllSession(project, queue)
+        McpAuthAllDialog(project, session).show()
+        session.start()
     }
 
     private fun buildCommand(claudePath: String): List<String> {
@@ -216,14 +198,17 @@ object McpOAuthFlow {
      */
     private class Driver(
         private val server: McpServer,
+        private val workDir: String,
         private val process: Process,
         private val onFinish: (AuthOutcome) -> Unit,
     ) {
         private val input = process.inputStream
         private val out: OutputStream = process.outputStream
         private val transcript = StringBuilder()   // all stripped output (success scan + debug)
+        private val cli by lazy { McpCli(workDir) }
         @Volatile private var browserOpened = false
         @Volatile private var finished = false
+        @Volatile private var skipped = false
         // Set when claude reports the provider can't do OAuth (e.g. GitHub, which
         // is token-based) — surfaced to the user so they don't just see nothing.
         @Volatile private var authError: String? = null
@@ -245,6 +230,12 @@ object McpOAuthFlow {
                     finish(AuthOutcome.TIMED_OUT)
                 }
             }, "mcp-oauth-watchdog").apply { isDaemon = true; start() }
+        }
+
+        /** Skip this server: stop now and report SKIPPED (advances the batch). */
+        fun cancel() {
+            skipped = true
+            finish(AuthOutcome.SKIPPED)
         }
 
         private fun drive() {
@@ -301,15 +292,13 @@ object McpOAuthFlow {
             send(ENTER)
             DebugLog.log("mcp-oauth", "authenticate triggered for '${server.name}'")
 
-            // 6. Keep the process alive while the user signs in, then let claude
-            //    finish the code→token exchange and write the credential. We do NOT
-            //    SIGKILL here: the token lands in the OS keychain, and a forced kill
-            //    races that write (the symptom: browser says "success" but the
-            //    server still shows "needs authentication"). So we wait for the
-            //    auth to land, give it a settle buffer, then quit claude GRACEFULLY
-            //    (finish()) so it flushes the token and updates its state.
-            val ok = awaitOutcome(180_000)
-            settle(2_500, 12_000)   // let the token exchange + keychain write complete
+            // 6. Wait for sign-in. Success is confirmed authoritatively by polling
+            //    `claude mcp list` (the same health check the UI's Refresh uses) —
+            //    the moment the server flips to Connected we advance, instead of
+            //    waiting out a timeout while scraping the TUI for a success string.
+            //    Because that poll proves the token is already persisted, we can
+            //    then tear down promptly.
+            val ok = awaitOutcome(SIGN_IN_TIMEOUT_MS)
             finish(when {
                 ok -> AuthOutcome.SUCCESS
                 authError != null -> AuthOutcome.NEEDS_TOKEN   // provider can't OAuth
@@ -367,19 +356,31 @@ object McpOAuthFlow {
 
         private fun awaitOutcome(timeoutMs: Long): Boolean {
             val deadline = now() + timeoutMs
+            // First poll a bit in so the user has time to start sign-in; the TUI
+            // markers below also trigger an immediate poll when they appear.
+            var nextPoll = now() + FIRST_POLL_MS
             while (now() < deadline && !finished) {
                 if (authError != null) return false   // provider can't OAuth — stop now
-                val frame = settle(700, 4_000).lowercase()
-                if (SUCCESS_MARKERS.any { it in frame }) return true
-                // The detail view flips "✘ not authenticated" → "✔ authenticated"
-                // once the token lands. Check a FRESH frame so stale scrollback
-                // (or another server's "connected") can't false-positive.
-                if ("authenticated" in frame && "not authenticated" !in frame) return true
-                // Provider can't do OAuth (e.g. token-only servers like GitHub) —
-                // stop waiting and report it instead of timing out silently.
+                val frame = settle(700, 3_000).lowercase()
+                // A TUI success hint → poll right away to confirm authoritatively.
+                val hint = SUCCESS_MARKERS.any { it in frame } ||
+                    ("authenticated" in frame && "not authenticated" !in frame)
                 FAILURE_MARKERS.firstOrNull { it in frame }?.let { authError = it; return false }
+                if (hint || now() >= nextPoll) {
+                    if (pollConnected()) return true
+                    nextPoll = now() + POLL_INTERVAL_MS
+                }
             }
+            // Timed out: accept a TUI success string as a best-effort fallback.
             return sawSuccess()
+        }
+
+        /** Authoritative success check: does `claude mcp list` now report Connected? */
+        private fun pollConnected(): Boolean {
+            val connected = runCatching { cli.list()[server.name] == McpServerStatus.CONNECTED }
+                .getOrDefault(false)
+            if (connected) DebugLog.log("mcp-oauth", "poll: '${server.name}' is connected")
+            return connected
         }
 
         private fun sawSuccess(): Boolean {
@@ -407,18 +408,23 @@ object McpOAuthFlow {
         private fun finish(outcome: AuthOutcome) {
             if (finished) return
             finished = true
-            DebugLog.log("mcp-oauth", "finish: ${server.name} → $outcome — quitting claude gracefully")
-            // Ask claude to exit cleanly so it can flush the just-stored OAuth
-            // token and update its needs-auth state. A SIGKILL here loses the
-            // token. Esc leaves any open menu; double Ctrl-C is claude's quit;
-            // Ctrl-D (EOF) is a backstop; destroyForcibly only as a last resort.
-            runCatching {
-                send(ESC); sleep(200); send(ESC); sleep(300)
-                send(CTRL_C); sleep(400); send(CTRL_C)
-            }
-            if (!waitExit(12)) {
-                runCatching { send(CTRL_D) }
-                if (!waitExit(3)) runCatching { process.destroyForcibly() }
+            DebugLog.log("mcp-oauth", "finish: ${server.name} → $outcome")
+            if (skipped) {
+                // User hit Skip — tear down immediately, no graceful dance.
+                runCatching { process.destroyForcibly() }
+            } else {
+                // Quit claude cleanly so it flushes state. Success is already
+                // poll-confirmed (token persisted), so the waits are short. Esc
+                // leaves any menu; double Ctrl-C is claude's quit; Ctrl-D is a
+                // backstop; destroyForcibly only as a last resort.
+                runCatching {
+                    send(ESC); sleep(150); send(ESC); sleep(250)
+                    send(CTRL_C); sleep(300); send(CTRL_C)
+                }
+                if (!waitExit(6)) {
+                    runCatching { send(CTRL_D) }
+                    if (!waitExit(2)) runCatching { process.destroyForcibly() }
+                }
             }
             DebugLog.log("mcp-oauth", "process alive after quit=${process.isAlive}")
             runCatching { onFinish(outcome) }
@@ -440,6 +446,9 @@ object McpOAuthFlow {
             // Hard per-server cap (a bit above the 180s sign-in wait + graceful
             // quit) so one slow/stuck server can never block the rest of a batch.
             private const val WATCHDOG_MS = 210_000L
+            // Status polling: first check after a short head-start, then steadily.
+            private const val FIRST_POLL_MS = 8_000L
+            private const val POLL_INTERVAL_MS = 5_000L
 
             private const val ENTER = "\r"
             private const val DOWN = "\u001B[B"   // ANSI cursor-down
