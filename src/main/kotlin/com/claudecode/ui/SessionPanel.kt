@@ -661,8 +661,30 @@ class SessionPanel(
             "/model", "/models" -> { runModelInfoCommand(); true }
             "/settings", "/config" -> { runSettingsCommand(); true }
             "/mcp", "/mcps" -> { runMcpCommand(); true }
+            "/memory", "/claude" -> { runMemoryCommand(); true }
+            "/init" -> { runInitCommand(); true }
             else -> false
         }
+    }
+
+    /** `/memory` — open the CLAUDE.md editor (project / local / user scope). */
+    private fun runMemoryCommand() {
+        com.claudecode.memory.ClaudeMemoryDialog(project, project.basePath).show()
+    }
+
+    /**
+     * `/init` — ask Claude to analyze the project and write/refresh CLAUDE.md.
+     * Claude does it with its Write/Edit tool, so it needs a mode that allows
+     * edits (Content Only / Unrestricted); in Plan mode the permission UI fires.
+     */
+    private fun runInitCommand() {
+        if (session.isBusy) return
+        appendUserMessage("/init — analyze the project and create/refresh CLAUDE.md")
+        permissionHintShown = false
+        resetFailureDedupe()
+        setBusyState(true)
+        scrollOutputToBottom()
+        session.sendMessage(INIT_PROMPT)
     }
 
     /**
@@ -1930,6 +1952,15 @@ class SessionPanel(
         private const val MAX_RETRY_POLL_ATTEMPTS = 30
         /** A turn that took at least this long fires a desktop notification when the panel isn't focused. */
         private const val LONG_TASK_NOTIFY_THRESHOLD_MS = 20_000L
+
+        /** The prompt `/init` sends — Claude analyzes the project and writes/refreshes CLAUDE.md. */
+        private const val INIT_PROMPT =
+            "Analyze this project and create or improve a CLAUDE.md file at the project root. " +
+                "Include, concisely and skimmably: the key build / test / lint / run commands; a short " +
+                "architecture overview (main directories, entry points, how the pieces fit together); " +
+                "important conventions and patterns to follow; and any gotchas a coding agent should know. " +
+                "If a CLAUDE.md already exists, review and refine it rather than rewriting from scratch. " +
+                "Save it with the Write/Edit tool."
     }
 
     private fun humanizeAgo(deltaMs: Long): String {

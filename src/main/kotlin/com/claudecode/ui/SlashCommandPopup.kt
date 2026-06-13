@@ -49,6 +49,8 @@ class SlashCommandPopup(
         Item("/mcp", "List MCP servers + connection status"),
         Item("/settings", "Open plugin Settings"),
         Item("/btw", "Queue a message to send after the current turn"),
+        Item("/init", "Analyze the project and write/refresh CLAUDE.md"),
+        Item("/memory", "Edit CLAUDE.md (project / local / user)"),
     )
 
     private val list = JBList(items).apply {

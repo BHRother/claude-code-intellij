@@ -306,6 +306,15 @@ class ClaudeSettingsConfigurable : Configurable {
                             "<code>settings.json</code> at project / local / global scope."
                     )
                 }
+                row {
+                    button("Edit CLAUDE.md…") {
+                        openMemoryDialog()
+                    }
+                    comment(
+                        "Edit Claude's standing instructions/context (<code>CLAUDE.md</code>) at project / " +
+                            "local / user scope. Run <code>/init</code> in a chat to have Claude generate it."
+                    )
+                }
             }
         }
         return panel!!
@@ -340,6 +349,11 @@ class ClaudeSettingsConfigurable : Configurable {
     private fun openSettingsFilesDialog() {
         val project = resolveActiveProject("Edit settings.json") ?: return
         com.claudecode.config.ClaudeSettingsFileDialog(project, project.basePath).show()
+    }
+
+    private fun openMemoryDialog() {
+        val project = resolveActiveProject("Edit CLAUDE.md") ?: return
+        com.claudecode.memory.ClaudeMemoryDialog(project, project.basePath).show()
     }
 
     private fun exportDebugLog() {
