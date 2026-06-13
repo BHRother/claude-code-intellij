@@ -54,6 +54,12 @@ interface SessionListener {
      * the structured options here and suppress the resulting error noise.)
      */
     fun onAskUserQuestion(session: ClaudeSession, toolUseId: String, questions: List<AskQuestion>) {}
+    /**
+     * Fired once per turn with how full the model's context window is.
+     * [usedTokens] is the prompt context just sent (input + cache); [contextWindow]
+     * is the model's limit. Default no-op so other listeners are unaffected.
+     */
+    fun onContextUsage(session: ClaudeSession, usedTokens: Int, contextWindow: Int) {}
     fun onFinished(session: ClaudeSession, costUsd: Double?)
     fun onError(session: ClaudeSession, error: String)
     fun onDebug(session: ClaudeSession, message: String)
@@ -543,6 +549,26 @@ class ClaudeSession(
             "result" -> {
                 val sid = json.get("session_id")?.asString
                 if (sid != null) sessionId = sid
+
+                // Context meter: modelUsage carries each model's contextWindow +
+                // token counts. The primary model is the one with the most input
+                // context; report how full its window is (input + cache tokens).
+                json.getAsJsonObject("modelUsage")?.let { modelUsage ->
+                    var usedTokens = 0
+                    var contextWindow = 0
+                    for ((_, mu) in modelUsage.entrySet()) {
+                        val o = mu.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                        fun n(k: String) = o.get(k)?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+                        val used = n("inputTokens") + n("cacheReadInputTokens") + n("cacheCreationInputTokens")
+                        if (used > usedTokens) {
+                            usedTokens = used
+                            contextWindow = n("contextWindow")
+                        }
+                    }
+                    if (contextWindow > 0) {
+                        listeners.forEach { it.onContextUsage(this, usedTokens, contextWindow) }
+                    }
+                }
 
                 val resultText = json.get("result")?.asString
                 // Don't surface the final text when we handled an AskUserQuestion

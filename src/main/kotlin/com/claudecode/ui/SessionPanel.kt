@@ -31,6 +31,7 @@ class SessionPanel(
     private lateinit var inputArea: PasteAwareInputArea
     private val sendStopButton: AccentButton
     private val statusLabel: JLabel
+    private lateinit var contextLabel: JLabel
     private val thinkingLabel: JLabel
     private val debugArea: JTextArea
     private val debugToggle: JCheckBox
@@ -413,9 +414,15 @@ class SessionPanel(
 
         // Single bottom row: status on the left (changes as Claude works),
         // keyboard hint on the right.
+        contextLabel = JLabel("").apply {
+            font = smallFont
+            foreground = JBColor(0x808080, 0x808080)
+            border = JBUI.Borders.empty(0, 12)
+        }
         val statusHintPanel = JPanel(BorderLayout()).apply {
             isOpaque = false
             add(statusLabel, BorderLayout.WEST)
+            add(contextLabel, BorderLayout.CENTER)
             add(hintLabel, BorderLayout.EAST)
         }
 
@@ -720,6 +727,7 @@ class SessionPanel(
         // applies via the editor kit's stylesheet.
         outputPane.text = "<html><body></body></html>"
         permissionHintShown = false
+        contextLabel.text = ""  // fresh conversation → reset the context meter
         resetFailureDedupe()
         appendHtml(
             "<div class='system-msg'>↻ Session cleared — starting a fresh conversation. " +
@@ -1330,6 +1338,29 @@ class SessionPanel(
             appendHtml("<div class='tool-msg'>${escapeHtml(description)}</div>")
             statusLabel.text = description.take(60)
         }
+    }
+
+    override fun onContextUsage(session: ClaudeSession, usedTokens: Int, contextWindow: Int) {
+        if (contextWindow <= 0) return
+        val pct = (usedTokens * 100.0 / contextWindow).coerceIn(0.0, 100.0)
+        ApplicationManager.getApplication().invokeLater {
+            val color = when {
+                pct >= 90 -> "#D9534F"   // red — nearly full
+                pct >= 75 -> "#D9B263"   // amber — getting full
+                else -> "#808080"
+            }
+            contextLabel.text = "<html><span style='color:$color;'>◑ ${pct.toInt()}% context</span></html>"
+            contextLabel.toolTipText =
+                "${fmtTokens(usedTokens)} / ${fmtTokens(contextWindow)} tokens in this conversation. " +
+                    "Use /clear (or a new chat) when it fills up."
+        }
+    }
+
+    /** Compact token count: 24,284 → "24k", 1,000,000 → "1.0M". */
+    private fun fmtTokens(n: Int): String = when {
+        n >= 1_000_000 -> String.format("%.1fM", n / 1_000_000.0)
+        n >= 1_000 -> "${n / 1000}k"
+        else -> n.toString()
     }
 
     override fun onModelInfo(session: ClaudeSession, model: String) {
