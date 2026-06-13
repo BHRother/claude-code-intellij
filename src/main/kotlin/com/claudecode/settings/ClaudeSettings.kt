@@ -42,7 +42,12 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         // Opt-in diagnostics. When on, components record what they do (e.g. the
         // MCP OAuth PTY transcript) into an in-memory buffer the user can export
         // from Settings for bug reports. Off → nothing is recorded. See DebugLog.
-        var debugMode: Boolean = false
+        var debugMode: Boolean = false,
+        // EXPERIMENTAL (Tier 2): run one long-lived `claude -p --input-format
+        // stream-json` process per session and stream messages over stdin,
+        // instead of one process per turn. Off by default; the one-shot path is
+        // unchanged. See ClaudeSession + docs/streaming-session-spike.md.
+        var streamingSession: Boolean = false
     )
 
     private var myState = State()

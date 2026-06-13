@@ -76,6 +76,13 @@ class ClaudeSession(
     private val log = Logger.getInstance(ClaudeSession::class.java)
     private val listeners = CopyOnWriteArrayList<SessionListener>()
     private var process: Process? = null
+    // ── Tier 2 (experimental): one long-lived `claude -p --input-format
+    // stream-json` process per session, driven over stdin. Off by default
+    // (ClaudeSettings.streamingSession); the one-shot path is unchanged.
+    @Volatile private var streamProc: Process? = null
+    @Volatile private var streamStdin: OutputStream? = null
+    private val streamResponse = StringBuilder()
+    private var interruptCounter = 0
     @Volatile private var sessionId: String? = initialSessionId
 
     /** The claude server-side session ID once known. Null until the first turn lands. */
@@ -135,8 +142,159 @@ class ClaudeSession(
         } catch (_: Exception) {}
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    //  Streaming session (experimental, off by default). One persistent process
+    //  per session; user messages go over stdin as stream-json, and output is
+    //  parsed by the SAME parseStreamLine the one-shot path uses — so every
+    //  listener-driven feature (text, thinking, tools, results, cost, model,
+    //  AskUserQuestion, permission detection) works without change. See
+    //  docs/streaming-session-spike.md. Known gaps to revisit before promoting
+    //  off the flag: permission-grant retry (the persistent process won't
+    //  re-read settings.local.json) and mid-session model/permission changes.
+    // ──────────────────────────────────────────────────────────────────────
+
+    private fun useStreaming(): Boolean =
+        runCatching { ClaudeSettings.getInstance().state.streamingSession }.getOrDefault(false)
+
+    private fun sendMessageStreaming(text: String) {
+        isBusy = true
+        messages.add(ClaudeMessage("user", text))
+        listeners.forEach { it.onThinking(this, null) }
+        Thread({
+            try {
+                ensureStreamProcess()
+                askQuestionActiveToolUseId = null
+                writeUserMessage(text)
+            } catch (e: Exception) {
+                debug("streaming send failed: ${e.stackTraceToString()}")
+                listeners.forEach { it.onError(this, "Streaming error: ${e.message}") }
+                isBusy = false
+                listeners.forEach { it.onFinished(this, null) }
+            }
+        }, "claude-stream-$id-send").apply { isDaemon = true; start() }
+    }
+
+    /** Spawn the long-lived streaming process if it isn't already running. */
+    private fun ensureStreamProcess() {
+        streamProc?.let { if (it.isAlive) return }
+        val settings = ClaudeSettings.getInstance().state
+        val configuredPath = settings.claudePath.ifBlank { com.claudecode.ClaudeConstants.DEFAULT_CLI_PATH }
+        val resolution = resolveClaudePathDiagnosed(configuredPath)
+        resolution.trace.forEach { debug("path-resolution: $it") }
+        val claudePath = resolution.resolvedPath
+
+        // No `script` PTY wrapper: stream-json over pipes flushes per event
+        // (verified by the spike). No --resume / no prompt arg — the
+        // conversation lives in this process.
+        val args = mutableListOf(
+            claudePath, "-p",
+            "--input-format", "stream-json",
+            "--output-format", "stream-json",
+            "--verbose",
+        )
+        val model = (modelOverride ?: settings.model)
+        if (model.isNotBlank()) { args.add("--model"); args.add(model) }
+        val permMode = (permissionModeOverride ?: settings.permissionMode)
+            .ifBlank { com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS }
+        args.add("--permission-mode"); args.add(permMode)
+        val appendSystem = settings.appendSystemPrompt
+        if (appendSystem.isNotBlank()) { args.add("--append-system-prompt"); args.add(appendSystem) }
+
+        debug("Streaming spawn: ${args.joinToString(" ") { shellQuote(it) }}")
+        val pb = ProcessBuilder(args)
+            .directory(File(workingDirectory))
+            .redirectErrorStream(true)
+        augmentedPath(claudePath, resolveShellPath())?.let { pb.environment()["PATH"] = it }
+        pb.environment()["TERM"] = com.claudecode.ClaudeConstants.ENV_TERM_VALUE
+        pb.environment()["NO_COLOR"] = "1"
+        com.claudecode.ClaudeConstants.thinkingBudgetTokens(settings.thinkingBudget)?.let {
+            pb.environment()["MAX_THINKING_TOKENS"] = it.toString()
+        }
+        val proc = pb.start()
+        streamProc = proc
+        streamStdin = proc.outputStream
+        streamResponse.setLength(0)
+        debug("Streaming process started (pid=${proc.pid()})")
+        startStreamReader(proc)
+    }
+
+    /** One persistent reader for the streaming process: parse + fire onFinished per turn. */
+    private fun startStreamReader(proc: Process) {
+        Thread({
+            try {
+                BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
+                    reader.forEachLine { raw ->
+                        val line = raw.trim()
+                        if (line.isBlank()) return@forEachLine
+                        if (!line.startsWith("{")) {
+                            debug("stream non-json: ${line.take(200)}")
+                            return@forEachLine
+                        }
+                        val type = runCatching {
+                            JsonParser.parseString(line).asJsonObject.get("type")?.asString
+                        }.getOrNull()
+                        val cost = runCatching { parseStreamLine(line, streamResponse) }
+                            .onFailure { debug("stream parse error: ${it.message}") }
+                            .getOrNull()
+                        // A "result" event ends a turn — fire onFinished but keep
+                        // the process alive for the next message.
+                        if (type == "result") {
+                            if (streamResponse.isNotEmpty()) {
+                                messages.add(ClaudeMessage("assistant", streamResponse.toString()))
+                            }
+                            streamResponse.setLength(0)
+                            isBusy = false
+                            listeners.forEach { it.onFinished(this, cost) }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                debug("stream reader ended: ${e.message}")
+            }
+            // Process exited (crash, /clear restart, or dispose).
+            if (streamProc === proc) {
+                streamProc = null
+                streamStdin = null
+                streamResponse.setLength(0)
+                if (isBusy) {
+                    isBusy = false
+                    listeners.forEach { it.onFinished(this, null) }
+                }
+            }
+        }, "claude-stream-$id-read").apply { isDaemon = true; start() }
+    }
+
+    private fun writeUserMessage(text: String) {
+        val msg = mapOf(
+            "type" to "user",
+            "message" to mapOf(
+                "role" to "user",
+                "content" to listOf(mapOf("type" to "text", "text" to text)),
+            ),
+        )
+        val out = streamStdin ?: throw IllegalStateException("streaming stdin unavailable")
+        out.write((com.google.gson.Gson().toJson(msg) + "\n").toByteArray(Charsets.UTF_8))
+        out.flush()
+    }
+
+    /** Interrupt the current streaming turn. No-op outside streaming mode. */
+    fun interrupt() {
+        val out = streamStdin ?: return
+        val req = """{"type":"control_request","request_id":"int_${++interruptCounter}",""" +
+            """"request":{"subtype":"interrupt"}}"""
+        runCatching { out.write((req + "\n").toByteArray(Charsets.UTF_8)); out.flush() }
+            .onFailure { debug("interrupt failed: ${it.message}") }
+    }
+
+    private fun stopStreaming() {
+        runCatching { streamProc?.destroyForcibly() }
+        streamProc = null
+        streamStdin = null
+    }
+
     fun sendMessage(text: String) {
         if (isBusy) return
+        if (useStreaming()) { sendMessageStreaming(text); return }
 
         isBusy = true
         messages.add(ClaudeMessage("user", text))
@@ -687,6 +845,12 @@ class ClaudeSession(
 
     fun stop() {
         debug("Stop requested")
+        if (streamProc != null) {
+            // Streaming: interrupt the current turn but keep the session alive.
+            // The reader fires onFinished when the interrupted result arrives.
+            interrupt()
+            return
+        }
         process?.destroyForcibly()
         process = null
         isBusy = false
@@ -704,10 +868,14 @@ class ClaudeSession(
         debug("Conversation reset (sessionId dropped, history cleared)")
         sessionId = null
         messages.clear()
+        // A fresh conversation needs a fresh streaming process (it holds the
+        // context); the next message re-spawns one. No-op in one-shot mode.
+        stopStreaming()
     }
 
     override fun dispose() {
-        stop()
+        stopStreaming()
+        stop()   // streamProc is null now → one-shot cleanup path
         listeners.clear()
     }
 
