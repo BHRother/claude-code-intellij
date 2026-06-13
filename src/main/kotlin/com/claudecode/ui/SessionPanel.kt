@@ -391,7 +391,18 @@ class SessionPanel(
         val debugScrollPane = JBScrollPane(debugArea).apply {
             border = JBUI.Borders.customLine(JBColor(0x3C3F41, 0x3C3F41), 1, 0, 0, 0)
             preferredSize = Dimension(0, 120)
+        }
+        // The live in-chat debug log now has its own Export / Clear right here,
+        // so the logs you see can be saved without going through Settings.
+        val debugToolbar = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 2)).apply {
+            isOpaque = false
+            add(JButton("Export…").apply { isFocusable = false; addActionListener { exportSessionDebug() } })
+            add(JButton("Clear").apply { isFocusable = false; addActionListener { debugArea.text = "" } })
+        }
+        val debugPanel = JPanel(BorderLayout()).apply {
             isVisible = false
+            add(debugToolbar, BorderLayout.NORTH)
+            add(debugScrollPane, BorderLayout.CENTER)
         }
 
         debugToggle = JCheckBox("Debug").apply {
@@ -399,9 +410,9 @@ class SessionPanel(
             foreground = JBColor(0x606060, 0x606060)
             isOpaque = false
             isSelected = false
-            toolTipText = "Show debug log panel"
+            toolTipText = "Show the live debug log for this chat (with Export)"
             addActionListener {
-                debugScrollPane.isVisible = isSelected
+                debugPanel.isVisible = isSelected
                 this@SessionPanel.revalidate()
             }
         }
@@ -437,7 +448,7 @@ class SessionPanel(
             add(inputPanel)
             add(chipsPanel)
             add(statusHintPanel)
-            add(debugScrollPane)
+            add(debugPanel)
         }
 
         add(outputOverlay, BorderLayout.CENTER)
@@ -2042,6 +2053,33 @@ class SessionPanel(
         ApplicationManager.getApplication().invokeLater {
             debugArea.append("$message\n")
             debugArea.caretPosition = debugArea.document.length
+        }
+    }
+
+    /** Save this chat's live debug log (the debug panel's contents) to a file. */
+    private fun exportSessionDebug() {
+        val text = debugArea.text
+        if (text.isBlank()) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(project, "No debug output yet for this chat.", "Export Debug Log")
+            return
+        }
+        val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(java.util.Date())
+        // Reflective FileSaverDescriptor ctor (the deprecated-but-present one) —
+        // same pattern as the other exports, keeps it out of our bytecode.
+        val descriptor = com.intellij.openapi.fileChooser.FileSaverDescriptor::class.java
+            .getConstructor(String::class.java, String::class.java, Array<String>::class.java)
+            .newInstance("Export Debug Log", "Save this chat's debug log to a file", arrayOf("log"))
+        val saved = com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+            .createSaveFileDialog(descriptor, project)
+            .save(null as com.intellij.openapi.vfs.VirtualFile?, "claude-debug-$ts.log")
+            ?: return
+        val file = saved.file
+        try {
+            file.writeText(text)
+            com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)
+            com.intellij.openapi.ui.Messages.showInfoMessage(project, "Saved to ${file.absolutePath}", "Export Debug Log")
+        } catch (t: Throwable) {
+            com.intellij.openapi.ui.Messages.showErrorDialog(project, "Could not write ${file.absolutePath}:\n${t.message}", "Export Debug Log")
         }
     }
 

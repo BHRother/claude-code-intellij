@@ -229,13 +229,18 @@ class ClaudeSession(
         Thread({
             try {
                 BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
+                    var lineNum = 0
                     reader.forEachLine { raw ->
+                        lineNum++
                         val line = raw.trim()
                         if (line.isBlank()) return@forEachLine
                         if (!line.startsWith("{")) {
-                            debug("stream non-json: ${line.take(200)}")
+                            debug("non-json[$lineNum]: ${line.take(200)}")
                             return@forEachLine
                         }
+                        // Mirror the one-shot path: log every event so the in-chat
+                        // debug panel shows the same per-turn detail in streaming mode.
+                        debug("json[$lineNum]: ${line.take(200)}${if (line.length > 200) "..." else ""}")
                         val type = runCatching {
                             JsonParser.parseString(line).asJsonObject.get("type")?.asString
                         }.getOrNull()
