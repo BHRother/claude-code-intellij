@@ -284,6 +284,16 @@ class ClaudeSettingsConfigurable : Configurable {
                     button("Export debug log…") { exportDebugLog() }
                     comment("Save the captured diagnostics to a file to attach to a bug report.")
                 }.visibleIf(debugCb.selected)
+                row {
+                    checkBox("Use a streaming session (experimental)")
+                        .bindSelected(settings.state::streamingSession)
+                        .comment(
+                            "Runs one long-lived <code>claude</code> process per chat (streaming I/O) instead " +
+                                "of one per message — faster turns and a foundation for mid-turn steering. " +
+                                "Off by default. Reopen chats after changing. <b>Experimental:</b> permission-grant " +
+                                "retry isn't wired here yet, so prefer Unrestricted while trying it."
+                        )
+                }
             }
             group("MCP Servers") {
                 row {

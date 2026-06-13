@@ -48,7 +48,12 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         var effortLevel: String = "",
         // Automatic fallback model(s) when the primary is overloaded/unavailable
         // (--fallback-model). Blank = no fallback.
-        var fallbackModel: String = ""
+        var fallbackModel: String = "",
+        // EXPERIMENTAL (Tier 2): run one long-lived `claude -p --input-format
+        // stream-json` process per session and stream messages over stdin,
+        // instead of one process per turn. Off by default; the one-shot path is
+        // unchanged. See ClaudeSession + docs/streaming-session-spike.md.
+        var streamingSession: Boolean = false
     )
 
     private var myState = State()
