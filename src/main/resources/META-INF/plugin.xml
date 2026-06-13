@@ -31,6 +31,7 @@
         <li><b>File chips</b> — drag/drop, copy/paste, or type a filename to attach files as context; resolves bare filenames against your project</li>
         <li><b>Image paste</b> — paste a screenshot or any clipboard image; saved to a temp PNG and sent to Claude as a multimodal input on submit</li>
         <li><b>Large-text paste chips</b> — long pastes collapse into a compact chip; double-click to expand back into the input</li>
+        <li><b>Queue messages while Claude works</b> — type a follow-up (or <code>/btw &lt;message&gt;</code>) while a response is streaming and it queues instead of being lost, then sends automatically when the turn finishes; remove queued items before they go</li>
         <li><b>Smart auto-scroll</b> — follows new output unless you've scrolled up to read; "Jump to latest" button keeps you in control</li>
         <li>Inline diffs: expandable old vs. new for every edit Claude makes, with consolidated stats per file</li>
         <li>Clickable file links and a changed-files summary grouped by folder</li>
@@ -70,7 +71,7 @@
         <li><b>MCP server management UI</b> — a server icon in the tool-window header (and a button in Settings) opens a manager that <b>aggregates every MCP server Claude can see</b> for the project: project <code>.mcp.json</code>, plus the user and project-local scopes inside <code>~/.claude.json</code>. Add, edit, and remove servers across all three scopes.</li>
         <li><b>All transports</b> — stdio (command + args + env) and remote <b>SSE / HTTP</b> (URL + headers, optional OAuth client id / callback port).</li>
         <li><b>Live status</b> — connection/auth badges (✓ connected, ✗ failed, ⏸ pending approval, 🔒 needs authentication) from a health-checked <code>claude mcp list</code>.</li>
-        <li><b>Authenticate remote servers</b> — for servers that need OAuth, one click opens an interactive <code>claude</code> terminal on the <code>/mcp</code> screen so you can sign in; your chat sessions then use the server automatically.</li>
+        <li><b>Authentication, your way</b> — choose <b>API Key / Token</b>, <b>OAuth</b>, or <b>No Auth</b> per server. OAuth sign-in runs in the background and simply opens your browser to finish (no terminal); <b>Authenticate All</b> walks every server that needs it, one at a time, with a live progress panel (skip/remove, countdown). Your chat sessions then use the servers automatically.</li>
         <li>All writes go through the <code>claude mcp add-json</code> / <code>remove</code> CLI, so your large, live <code>~/.claude.json</code> is never hand-edited.</li>
     </ul>
 
@@ -93,6 +94,7 @@
     <ul>
         <li><b>Authenticate All — live progress &amp; faster advancement</b> — a non-modal panel now lists every queued server (waiting / authenticating / done / failed / skipped), shows the current server with a <b>countdown</b> of how long it'll wait, and lets you <b>Skip current</b> or <b>Remove</b> a pending server to avoid the wait. Each server advances the <i>moment it connects</i>: instead of waiting out a timeout while scraping the terminal, the flow polls <code>claude mcp list</code> (the same live health check as Refresh) and proceeds as soon as the server reports connected, then tears down promptly. One stuck or misconfigured server can no longer block the rest.</li>
         <li><b>Fix: no false permission prompts in Unrestricted mode</b> — when running Unrestricted (bypass permissions), a failing tool no longer triggers a bogus "blocked by your permission mode" message or an offer to allow the command / switch to a mode you're already in — the real error is shown instead. The permission UI now keys off the session's <i>effective</i> mode (the per-session chip override, not just the global default).</li>
+        <li><b>Queue messages &amp; <code>/btw</code></b> — type a follow-up while Claude is working and it now <b>queues</b> (shown above the input, removable) instead of being dropped, then sends automatically when the turn finishes. <code>/btw &lt;message&gt;</code> queues a side message any time. (Each queued message is answered after the current turn — <code>claude -p</code> runs one turn at a time.)</li>
     </ul>
 
     <h3>1.2.0</h3>

@@ -48,6 +48,7 @@ class SlashCommandPopup(
         Item("/model", "Show currently selected model"),
         Item("/mcp", "List MCP servers + connection status"),
         Item("/settings", "Open plugin Settings"),
+        Item("/btw", "Queue a message to send after the current turn"),
     )
 
     private val list = JBList(items).apply {

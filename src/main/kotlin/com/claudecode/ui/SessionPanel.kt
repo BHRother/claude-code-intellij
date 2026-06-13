@@ -75,6 +75,14 @@ class SessionPanel(
     private var pendingAsk: PendingAsk? = null
     private var askCounter = 0
 
+    // Messages typed while Claude is working (or via /btw) wait here and are sent
+    // as the next turn(s) when the current one finishes. See sendCurrentMessage /
+    // maybeDrainQueue. (Plugin-level queue — claude -p is one-shot per turn.)
+    private val messageQueue = mutableListOf<String>()
+    private lateinit var queuePanel: JPanel
+    private lateinit var queueHeader: JLabel
+    private lateinit var queueListPanel: JPanel
+
     /** One in-flight AskUserQuestion: its questions and the answers gathered so far. */
     private inner class PendingAsk(
         val askId: String,
@@ -412,11 +420,13 @@ class SessionPanel(
         }
 
         val chipsPanel = buildChipsPanel(smallFont, debugToggle)
+        buildQueuePanel(smallFont)
 
         val bottomPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             add(thinkingLabel)
             add(choiceBar) // persistent picker (questions + permission grants), hidden until needed
+            add(queuePanel) // queued messages (typed while busy / via /btw), hidden until non-empty
             add(inputPanel)
             add(chipsPanel)
             add(statusHintPanel)
@@ -465,11 +475,45 @@ class SessionPanel(
         }
 
         val text = inputArea.getFullText()
-        if (text.isEmpty() || session.isBusy) return
+        if (text.isEmpty()) return
+        val trimmed = text.trim()
+
+        // `/btw <message>` — queue a side message without interrupting the current
+        // turn. Works whether Claude is busy or idle; if idle, the drain below
+        // sends it right away. (In -p mode each turn is one-shot, so a queued
+        // message is answered *after* the current turn, not interleaved into it.)
+        if (isBtwCommand(trimmed)) {
+            val payload = trimmed.substring(4).trim()
+            if (payload.isEmpty()) {
+                appendHtml("<div class='system-msg' style='color:#808080;'>Usage: <code>/btw &lt;message&gt;</code> " +
+                    "— queues a message to send after the current turn.</div>")
+                inputArea.clear()
+                return
+            }
+            clearPendingAsk()
+            enqueueMessage(payload)
+            inputArea.clear()
+            maybeDrainQueue()
+            return
+        }
+
+        // While Claude is working, queue a plain message instead of dropping it;
+        // it sends automatically when the turn finishes. Local slash commands
+        // can't be queued — they run once the turn ends.
+        if (session.isBusy) {
+            if (looksLikeSlashCommand(trimmed)) {
+                appendHtml("<div class='system-msg' style='color:#808080;'>Commands run when the current turn " +
+                    "finishes. Use <code>/btw &lt;message&gt;</code> to queue a message for Claude.</div>")
+                return
+            }
+            clearPendingAsk()
+            enqueueMessage(text)
+            inputArea.clear()
+            return
+        }
+
         // A typed message supersedes any pending question.
         clearPendingAsk()
-
-        val trimmed = text.trim()
 
         // `--flag` style input: claude -p won't parse it, surface the warning
         // unchanged. Slash commands are handled separately below.
@@ -494,16 +538,95 @@ class SessionPanel(
         }
 
         inputArea.clear()
+        dispatchMessage(text)
+    }
+
+    /** Actually send [text] as a turn (shared by the normal path and the queue drain). */
+    private fun dispatchMessage(text: String) {
         autoNameTab(text)
         appendUserMessage(text)
         permissionHintShown = false
         resetFailureDedupe()
         setBusyState(true)
-        // Sending a new message means "I'm done reading history" — snap to
-        // the bottom so the user's message and Claude's reply are in view,
-        // even if they had scrolled up earlier.
+        // Sending a new message means "I'm done reading history" — snap to the
+        // bottom so the message and Claude's reply are in view.
         scrollOutputToBottom()
         session.sendMessage(text)
+    }
+
+    private fun isBtwCommand(trimmed: String): Boolean {
+        val lower = trimmed.lowercase()
+        return lower == "/btw" || lower.startsWith("/btw ")
+    }
+
+    /** Queue [text] to send after the current turn; reflected in the queue panel. */
+    private fun enqueueMessage(text: String) {
+        messageQueue.add(text)
+        refreshQueuePanel()
+    }
+
+    /** Send the next queued message, if idle and not mid permission-grant. */
+    private fun maybeDrainQueue() {
+        if (session.isBusy || permissionPromptActive || messageQueue.isEmpty()) return
+        val next = messageQueue.removeAt(0)
+        refreshQueuePanel()
+        dispatchMessage(next)
+    }
+
+    private fun buildQueuePanel(smallFont: java.awt.Font) {
+        queueHeader = JLabel().apply {
+            font = smallFont
+            foreground = JBColor(0x9AA0A6, 0x9AA0A6)
+        }
+        queueListPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+        }
+        queuePanel = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(2, 6)
+            add(queueHeader, BorderLayout.NORTH)
+            add(queueListPanel, BorderLayout.CENTER)
+            isVisible = false
+        }
+    }
+
+    private fun refreshQueuePanel() {
+        queueListPanel.removeAll()
+        messageQueue.forEachIndexed { index, msg -> queueListPanel.add(buildQueueRow(index, msg)) }
+        queueHeader.text = "Queued — sends after the current turn (${messageQueue.size}):"
+        queuePanel.isVisible = messageQueue.isNotEmpty()
+        queuePanel.revalidate()
+        queuePanel.repaint()
+    }
+
+    private fun buildQueueRow(index: Int, msg: String): JPanel {
+        val oneLine = msg.replace(Regex("\\s+"), " ").trim()
+        val shown = if (oneLine.length > 90) oneLine.take(90) + "…" else oneLine
+        val label = JLabel("• $shown").apply {
+            font = queueHeader.font
+            foreground = JBColor(0xC0C0C0, 0xC0C0C0)
+            toolTipText = oneLine
+        }
+        val remove = JButton("✕").apply {
+            font = queueHeader.font
+            isFocusable = false
+            isContentAreaFilled = false
+            border = JBUI.Borders.empty(0, 4)
+            toolTipText = "Remove from queue"
+            addActionListener {
+                if (index in messageQueue.indices) {
+                    messageQueue.removeAt(index)
+                    refreshQueuePanel()
+                }
+            }
+        }
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(24))
+            add(label, BorderLayout.CENTER)
+            add(remove, BorderLayout.EAST)
+        }
     }
 
     /**
@@ -1575,6 +1698,9 @@ class SessionPanel(
             // back to the IDE. Short-running turns and active-window cases
             // are silent to avoid notification fatigue.
             maybeNotifyLongTaskComplete(elapsedMs, costUsd)
+
+            // Send the next message the user queued while this turn ran.
+            maybeDrainQueue()
         }
     }
 
