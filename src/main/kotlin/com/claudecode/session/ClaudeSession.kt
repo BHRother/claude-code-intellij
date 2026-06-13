@@ -196,6 +196,18 @@ class ClaudeSession(
             claudeArgs.add("--model")
             claudeArgs.add(model)
         }
+        // Automatic fallback when the primary model is overloaded/unavailable.
+        val fallback = settings.fallbackModel
+        if (fallback.isNotBlank()) {
+            claudeArgs.add("--fallback-model")
+            claudeArgs.add(fallback)
+        }
+        // Effort level (--effort). Blank = CLI default.
+        val effort = settings.effortLevel
+        if (effort.isNotBlank()) {
+            claudeArgs.add("--effort")
+            claudeArgs.add(effort)
+        }
         // Always pass --permission-mode explicitly. In -p mode the CLI silently
         // refuses tool calls that need permission and never emits an interactive
         // prompt, so the user picks one of the modes that fits their tolerance

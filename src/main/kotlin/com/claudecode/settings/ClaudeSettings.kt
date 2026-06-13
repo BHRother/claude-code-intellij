@@ -42,7 +42,13 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         // Opt-in diagnostics. When on, components record what they do (e.g. the
         // MCP OAuth PTY transcript) into an in-memory buffer the user can export
         // from Settings for bug reports. Off → nothing is recorded. See DebugLog.
-        var debugMode: Boolean = false
+        var debugMode: Boolean = false,
+        // Per-session effort the CLI spends (--effort): low/medium/high/xhigh/max.
+        // Blank = CLI default (currently "high").
+        var effortLevel: String = "",
+        // Automatic fallback model(s) when the primary is overloaded/unavailable
+        // (--fallback-model). Blank = no fallback.
+        var fallbackModel: String = ""
     )
 
     private var myState = State()

@@ -62,6 +62,22 @@ object ClaudeConstants {
         else -> level
     }
 
+    // ───────── Effort level (--effort) ─────────
+    // Per-session effort the CLI spends on a task. Blank = the CLI's own default
+    // (currently "high"). Higher = more thorough, slower, more expensive.
+    const val EFFORT_DEFAULT = ""
+    val EFFORT_LEVELS = listOf(EFFORT_DEFAULT, "low", "medium", "high", "xhigh", "max")
+
+    fun shortEffortLabel(level: String): String = when (level) {
+        EFFORT_DEFAULT -> "Default"
+        "low" -> "Low"
+        "medium" -> "Medium"
+        "high" -> "High"
+        "xhigh" -> "X-High"
+        "max" -> "Max"
+        else -> level
+    }
+
     // Maps to the CLI's --permission-mode flag. We expose only the three modes
     // that make sense in -p (non-interactive) mode. The CLI's "default" /
     // "dontAsk" / "auto" assume an interactive terminal that doesn't exist in

@@ -181,6 +181,33 @@ class ClaudeSettingsConfigurable : Configurable {
                                 "Higher budgets give better reasoning on hard tasks but cost more and are slower."
                         )
                 }
+                row("Effort:") {
+                    val levels = com.claudecode.ClaudeConstants.EFFORT_LEVELS
+                    comboBox(levels, friendlyEffortRenderer())
+                        .bindItem(
+                            { settings.state.effortLevel.takeIf { it in levels } ?: com.claudecode.ClaudeConstants.EFFORT_DEFAULT },
+                            { settings.state.effortLevel = it ?: com.claudecode.ClaudeConstants.EFFORT_DEFAULT },
+                        )
+                        .comment(
+                            "How hard the CLI works per task via <code>--effort</code>. " +
+                                "<b>Default</b> uses the CLI's own setting (currently High). Higher levels " +
+                                "(X-High / Max) are more thorough on hard problems but slower and costlier."
+                        )
+                }
+                row("Fallback model:") {
+                    val models = settings.getAllModels()
+                    comboBox(models, friendlyModelRenderer())
+                        .bindItem(
+                            { settings.state.fallbackModel.takeIf { it in models } ?: "" },
+                            { settings.state.fallbackModel = it ?: "" },
+                        )
+                        .comment(
+                            "Tried automatically when the primary model is overloaded or unavailable " +
+                                "(<code>--fallback-model</code>). <b>Default</b> = no fallback. " +
+                                "Pick a lighter/always-available model (e.g. a Sonnet/Haiku) to avoid " +
+                                "\"overloaded\" failures on long sessions."
+                        )
+                }
                 row("Max agentic turns:") {
                     // 0 = unlimited; show as a spinner with a 0-allowed range
                     // and clarify in the comment. JetBrains DSL doesn't have a
@@ -409,6 +436,17 @@ class ClaudeSettingsConfigurable : Configurable {
         ): java.awt.Component {
             val raw = value?.toString() ?: ""
             val label = com.claudecode.ClaudeConstants.shortThinkingBudgetLabel(raw)
+            return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
+        }
+    }
+
+    private fun friendlyEffortRenderer(): DefaultListCellRenderer = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?, value: Any?, index: Int,
+            isSelected: Boolean, cellHasFocus: Boolean
+        ): java.awt.Component {
+            val raw = value?.toString() ?: ""
+            val label = com.claudecode.ClaudeConstants.shortEffortLabel(raw)
             return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
         }
     }
