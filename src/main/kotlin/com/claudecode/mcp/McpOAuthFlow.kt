@@ -90,7 +90,7 @@ object McpOAuthFlow {
     fun spawnAuth(
         project: Project,
         server: McpServer,
-        statusProbe: ((String) -> Boolean)? = null,
+        statusProbe: ((String) -> McpServerStatus)? = null,
         autoProceed: Boolean = true,
         onReady: () -> Unit = {},
         onFinish: (AuthOutcome) -> Unit,
@@ -226,7 +226,7 @@ object McpOAuthFlow {
         private val server: McpServer,
         private val workDir: String,
         private val process: Process,
-        private val statusProbe: ((String) -> Boolean)?,
+        private val statusProbe: ((String) -> McpServerStatus)?,
         private val autoProceed: Boolean,
         private val onReady: () -> Unit,
         private val onFinish: (AuthOutcome) -> Unit,
@@ -246,6 +246,11 @@ object McpOAuthFlow {
         private val gate = java.util.concurrent.CountDownLatch(1)
         @Volatile private var proceeded = false
         @Volatile private var parked = false
+        // One late retry of the Authenticate keypress: if the server still needs
+        // auth well after we triggered sign-in, the first attempt likely didn't
+        // take (a missed callback / token that didn't persist), so we re-trigger.
+        @Volatile private var authTriggeredAt = 0L
+        @Volatile private var authRetried = false
 
         fun start() {
             Thread({
@@ -367,14 +372,16 @@ object McpOAuthFlow {
 
             // 5. Trigger it — claude opens the browser to finish OAuth.
             send(ENTER)
+            authTriggeredAt = now()
             DebugLog.log("mcp-oauth", "authenticate triggered for '${server.name}'")
 
             // 6. Wait for sign-in. Success is confirmed authoritatively by polling
-            //    `claude mcp list` (the same health check the UI's Refresh uses) —
-            //    the moment the server flips to Connected we advance, instead of
-            //    waiting out a timeout while scraping the TUI for a success string.
-            //    Because that poll proves the token is already persisted, we can
-            //    then tear down promptly.
+            //    `claude mcp get <server>` (a single-server health check) — the
+            //    moment it flips to Connected we advance, instead of waiting out a
+            //    timeout while scraping the TUI for a success string. Because that
+            //    poll proves the token is already persisted, we can tear down
+            //    promptly. If it stays needs-auth long after the trigger, the flow
+            //    re-triggers Authenticate once (see awaitOutcome).
             val ok = awaitOutcome(SIGN_IN_TIMEOUT_MS)
             finish(when {
                 ok -> AuthOutcome.SUCCESS
@@ -443,23 +450,54 @@ object McpOAuthFlow {
                 val hint = SUCCESS_MARKERS.any { it in frame } ||
                     ("authenticated" in frame && "not authenticated" !in frame)
                 FAILURE_MARKERS.firstOrNull { it in frame }?.let { authError = it; return false }
+                var status = McpServerStatus.UNKNOWN
                 if (hint || now() >= nextPoll) {
-                    if (pollConnected()) return true
+                    status = pollStatus()
+                    if (status == McpServerStatus.CONNECTED) return true
                     nextPoll = now() + POLL_INTERVAL_MS
+                }
+                // One late retry: still needs auth well after we triggered sign-in
+                // → the first attempt likely didn't take, so re-trigger once.
+                if (!authRetried && status == McpServerStatus.NEEDS_AUTH &&
+                    now() - authTriggeredAt >= RETRY_AFTER_MS
+                ) {
+                    authRetried = true
+                    DebugLog.log("mcp-oauth", "late retry: '${server.name}' still needs auth, re-triggering")
+                    retriggerAuthenticate()
+                    nextPoll = now() + FIRST_POLL_MS
                 }
             }
             // Timed out: accept a TUI success string as a best-effort fallback.
             return sawSuccess()
         }
 
-        /** Authoritative success check: does `claude mcp list` now report Connected? */
-        private fun pollConnected(): Boolean {
-            // A shared probe (batch) coalesces the health-check across drivers;
-            // the single-server path falls back to this driver's own CLI.
-            val connected = statusProbe?.invoke(server.name)
-                ?: runCatching { cli.list()[server.name] == McpServerStatus.CONNECTED }.getOrDefault(false)
-            if (connected) DebugLog.log("mcp-oauth", "poll: '${server.name}' is connected")
-            return connected
+        /** Single-server health check (`claude mcp get`) via the shared probe or our CLI. */
+        private fun pollStatus(): McpServerStatus {
+            // Check just this server, never the whole list — the batch passes a
+            // shared, cached probe; the single-server path falls back to a direct
+            // per-server check. Using `list` here would health-check every server
+            // and stall on large configs.
+            val status = statusProbe?.invoke(server.name)
+                ?: runCatching { cli.status(server.name) }.getOrDefault(McpServerStatus.UNKNOWN)
+            if (status == McpServerStatus.CONNECTED) DebugLog.log("mcp-oauth", "poll: '${server.name}' is connected")
+            return status
+        }
+
+        /** Re-press Authenticate (best-effort): back to the detail view, then trigger. */
+        private fun retriggerAuthenticate() {
+            send(ESC)
+            var frame = settle(600, 4_000)
+            // ESC may land on the detail view or pop back to the server list; if
+            // we see our server's cursor row, open its detail first.
+            if (!has(frame, "authenticate") && cursorOn(frame, server.name)) {
+                send(ENTER); frame = settle(600, 4_000)
+            }
+            if (has(frame, "authenticate")) {
+                send(ENTER)
+                DebugLog.log("mcp-oauth", "re-triggered authenticate for '${server.name}'")
+            } else {
+                DebugLog.log("mcp-oauth", "retry: couldn't get back to Authenticate; tail=${tail(frame)}")
+            }
         }
 
         private fun sawSuccess(): Boolean {
@@ -533,6 +571,9 @@ object McpOAuthFlow {
             // Kept tight so an instant sign-in is confirmed quickly; the shared
             // probe (batch) coalesces overlapping polls into one CLI call, so a
             // lower floor here doesn't multiply subprocess cost across drivers.
+            // After this long still showing needs-auth, re-trigger Authenticate
+            // once (long enough that a normal sign-in would already be done).
+            private const val RETRY_AFTER_MS = 50_000L
             private const val FIRST_POLL_MS = 2_500L
             private const val POLL_INTERVAL_MS = 3_000L
 

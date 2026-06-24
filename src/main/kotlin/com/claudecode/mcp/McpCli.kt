@@ -31,6 +31,19 @@ class McpCli(private val projectBasePath: String?) {
     }
 
     /**
+     * Health-check a **single** server via `claude mcp get <name>`. Unlike
+     * [list], this checks only that one server, so it stays fast (O(1)) no
+     * matter how many servers are configured — `list` health-checks them all,
+     * which with many servers can blow past the timeout and report nothing
+     * (which is what stalled "Authenticate All" success detection on big lists).
+     */
+    fun status(name: String, timeoutMs: Int = GET_TIMEOUT_MS): McpServerStatus {
+        val out = run(listOf("mcp", "get", name), timeoutMs)
+        if (!out.success) return McpServerStatus.UNKNOWN
+        return parseGetStatus(out.stdout)
+    }
+
+    /**
      * Add a server. Prefers `claude mcp add-json` (the whole definition travels
      * as one JSON arg, so there's no variadic-flag ordering to get wrong). The
      * only thing add-json can't express is the OAuth `--client-id` /
@@ -99,6 +112,9 @@ class McpCli(private val projectBasePath: String?) {
         private val LOG = Logger.getInstance(McpCli::class.java)
         private const val LIST_TIMEOUT_MS = 30_000
         private const val MUTATE_TIMEOUT_MS = 20_000
+        // Single-server health check is fast; keep it tight so a poll loop stays
+        // responsive even if one server is slow to answer.
+        private const val GET_TIMEOUT_MS = 15_000
         private val GSON = com.google.gson.Gson()
 
         /** `claude mcp add-json <name> <json> -s <scope>` — robust, order-free. */
@@ -183,6 +199,22 @@ class McpCli(private val projectBasePath: String?) {
          * skipped. Status is taken from the LAST " - " so a command containing
          * " - " doesn't confuse it.
          */
+        /**
+         * Classify the `Status:` line of `claude mcp get <name>` output, e.g.
+         *   `  Status: ✔ Connected`
+         * Reuses the same fuzzy matching as the list parser.
+         */
+        fun parseGetStatus(stdout: String): McpServerStatus {
+            for (rawLine in stdout.lines()) {
+                val line = rawLine.trim()
+                val idx = line.indexOf("Status:")
+                if (idx >= 0) {
+                    return McpServerStatus.fromListStatusText(line.substring(idx + "Status:".length).trim())
+                }
+            }
+            return McpServerStatus.UNKNOWN
+        }
+
         fun parseListOutput(stdout: String): Map<String, McpServerStatus> {
             val result = LinkedHashMap<String, McpServerStatus>()
             for (rawLine in stdout.lines()) {

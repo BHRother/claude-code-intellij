@@ -1,33 +1,31 @@
 package com.claudecode.mcp
 
 /**
- * A short-TTL cache over `claude mcp list` so several concurrent OAuth drivers
- * (the pipelined "Authenticate All") share **one** health-check subprocess
- * instead of each spawning its own every few seconds.
+ * Per-server connection check with a short-TTL cache, used to confirm an OAuth
+ * sign-in completed (and the token persisted) before the driver tears down.
  *
- * `claude mcp list` connects to *every* configured server, so it's relatively
- * expensive; with up to 3 sign-ins in flight, polling per-driver would mean 3×
- * that cost on overlapping timers. Here the first caller in a window pays for
- * the fetch and everyone else within [ttlMs] reads the cached map. The fetch
- * runs under the monitor, so callers that arrive mid-fetch block until it
- * lands and then read the fresh result (coalesced, never duplicated).
+ * It checks one server at a time via `claude mcp get <name>` rather than
+ * `claude mcp list`: `list` health-checks *every* configured server on each
+ * call, so with many servers it runs long and can exceed its timeout and report
+ * nothing — which stalled "Authenticate All" success detection. `get` touches
+ * only the server we care about, so it stays fast regardless of list size.
  *
- * Must be called off the EDT — [McpCli.list] blocks on a subprocess.
+ * The TTL coalesces repeated polls for the same server (the sign-in loop polls
+ * every few seconds). Must be called off the EDT — [McpCli.status] blocks on a
+ * subprocess.
  */
 class McpStatusProbe(workDir: String?, private val ttlMs: Long = 2_000L) {
 
     private val cli = McpCli(workDir)
-    private var cache: Map<String, McpServerStatus> = emptyMap()
-    private var fetchedAt = 0L
+    private val cache = HashMap<String, Pair<McpServerStatus, Long>>()  // name → (status, fetchedAt)
 
-    /** True if `claude mcp list` reports [name] as Connected (cached up to [ttlMs]). */
+    /** `claude mcp get [name]` status (cached up to [ttlMs]). */
     @Synchronized
-    fun isConnected(name: String): Boolean {
+    fun status(name: String): McpServerStatus {
         val now = System.currentTimeMillis()
-        if (now - fetchedAt > ttlMs) {
-            cache = runCatching { cli.list() }.getOrDefault(emptyMap())
-            fetchedAt = now
-        }
-        return cache[name] == McpServerStatus.CONNECTED
+        cache[name]?.let { (status, at) -> if (now - at <= ttlMs) return status }
+        val status = cli.status(name)
+        cache[name] = status to now
+        return status
     }
 }

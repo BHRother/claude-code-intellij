@@ -18,6 +18,34 @@ class McpCliParseTest {
     }
 
     @Test
+    fun `parses get-status connected`() {
+        val out = """
+            context7:
+              Scope: User config (available in all your projects)
+              Status: ✔ Connected
+              Type: stdio
+        """.trimIndent()
+        assertEquals(McpServerStatus.CONNECTED, McpCli.parseGetStatus(out))
+    }
+
+    @Test
+    fun `parses get-status needs-auth and failed`() {
+        assertEquals(
+            McpServerStatus.NEEDS_AUTH,
+            McpCli.parseGetStatus("foo:\n  Status: 🔒 Needs authentication\n")
+        )
+        assertEquals(
+            McpServerStatus.FAILED,
+            McpCli.parseGetStatus("foo:\n  Status: ✗ Failed to connect\n")
+        )
+    }
+
+    @Test
+    fun `get-status without a status line is unknown`() {
+        assertEquals(McpServerStatus.UNKNOWN, McpCli.parseGetStatus("foo:\n  Type: stdio\n"))
+    }
+
+    @Test
     fun `classifies failed, pending and auth statuses`() {
         val out = """
             alpha: node a.js - ✗ Failed to connect

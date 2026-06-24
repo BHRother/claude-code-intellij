@@ -47,6 +47,7 @@ class SlashCommandPopup(
         Item("/cost", "Show session cost so far"),
         Item("/model", "Show currently selected model"),
         Item("/mcp", "List MCP servers + connection status"),
+        Item("/login", "Sign in to / out of your Anthropic account"),
         Item("/settings", "Open plugin Settings"),
         Item("/btw", "Queue a message to send after the current turn"),
         Item("/init", "Analyze the project and write/refresh CLAUDE.md"),

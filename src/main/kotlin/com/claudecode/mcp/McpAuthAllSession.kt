@@ -134,7 +134,7 @@ class McpAuthAllSession(private val project: Project, servers: List<McpServer>) 
         item.handle = McpOAuthFlow.spawnAuth(
             project,
             item.server,
-            statusProbe = { name -> probe.isConnected(name) },
+            statusProbe = { name -> probe.status(name) },
             autoProceed = false,
             onReady = {
                 onEdt { if (item.state == State.WARMING) { item.state = State.READY; pump() } }

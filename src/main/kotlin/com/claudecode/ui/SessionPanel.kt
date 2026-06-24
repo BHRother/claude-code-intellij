@@ -674,6 +674,8 @@ class SessionPanel(
             "/mcp", "/mcps" -> { runMcpCommand(); true }
             "/memory", "/claude" -> { runMemoryCommand(); true }
             "/init" -> { runInitCommand(); true }
+            "/login" -> { runLoginCommand(); true }
+            "/logout" -> { runLoginCommand(); true }
             else -> false
         }
     }
@@ -681,6 +683,17 @@ class SessionPanel(
     /** `/memory` — open the CLAUDE.md editor (project / local / user scope). */
     private fun runMemoryCommand() {
         com.claudecode.memory.ClaudeMemoryDialog(project, project.basePath).show()
+    }
+
+    /**
+     * `/login` (and `/logout`) — sign in to / out of your Anthropic account via
+     * the `claude auth` CLI. Opens a dialog that shows the current account, opens
+     * the browser for OAuth, and takes the pasted authorization code — `claude -p`
+     * can't run the interactive `/login` itself, so we drive `claude auth login`.
+     */
+    private fun runLoginCommand() {
+        appendUserMessage("/login")
+        com.claudecode.auth.ClaudeLoginDialog(project).show()
     }
 
     /**
@@ -778,6 +791,7 @@ class SessionPanel(
                 "• <code>/cost</code> — total cost across this session's responses<br/>" +
                 "• <code>/model</code> — currently selected model<br/>" +
                 "• <code>/mcp</code> — list MCP servers + connection status<br/>" +
+                "• <code>/login</code> — sign in to / out of your Anthropic account<br/>" +
                 "• <code>/settings</code> — open the plugin Settings page<br/>" +
                 "<br/><i>Only these commands are supported at the moment. Anything else " +
                 "starting with <code>/</code> is blocked — Claude's CLI " +
