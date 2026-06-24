@@ -162,6 +162,21 @@ class MarkdownRendererTest {
         }
 
         @Test
+        fun `linkifies URL inside inline code span`() {
+            val result = MarkdownRenderer.renderInline("see `https://google.com` now")
+            // The URL is both inside a <code> span AND a clickable anchor.
+            assertTrue(result.contains("<code"))
+            assertTrue(result.contains("<a href='https://google.com'"))
+        }
+
+        @Test
+        fun `keeps trailing punctuation outside the link`() {
+            val result = MarkdownRenderer.renderInline("open `https://google.com`.")
+            assertTrue(result.contains("<a href='https://google.com'"))
+            assertFalse(result.contains("href='https://google.com.'"))
+        }
+
+        @Test
         fun `renders indented bullet point`() {
             val result = MarkdownRenderer.renderInline("  - nested item")
             assertTrue(result.contains("&bull;"))
@@ -217,6 +232,22 @@ class MarkdownRendererTest {
             })
             assertEquals("some code", capturedCode)
             assertTrue(result.contains("<a>copy</a>"))
+        }
+
+        @Test
+        fun `linkifies URL inside fenced code block`() {
+            val markdown = "```\nhttps://google.com\n```"
+            val result = MarkdownRenderer.render(markdown)
+            assertTrue(result.contains("<a href='https://google.com'"))
+        }
+
+        @Test
+        fun `linkifies URL inside a string literal in code`() {
+            val markdown = "```kotlin\nBrowserUtil.browse(\"https://google.com\")\n```"
+            val result = MarkdownRenderer.render(markdown)
+            assertTrue(result.contains("<a href='https://google.com'"))
+            // No leftover placeholder marker leaked into the output.
+            assertFalse(result.contains("PH0"))
         }
 
         @Test

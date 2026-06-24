@@ -145,6 +145,16 @@ object MarkdownRenderer {
 
         var result = escapedCode
 
+        // Linkify URLs first so the later passes can't fragment them — in
+        // particular the comment pass below would otherwise treat the `//` in
+        // `https://…` as the start of a line comment. Placeholdered, so a URL
+        // sitting inside a string literal (e.g. browse("https://…")) stays
+        // clickable rather than being styled as a plain string.
+        result = result.replace(URL_IN_ESCAPED) { m ->
+            val (anchor, trailing) = urlAnchor(m.value)
+            placeholder(anchor) + trailing
+        }
+
         // Highlight single-line comments first (highest priority)
         result = result.replace(Regex("(//.*?)(\n|$)", RegexOption.MULTILINE)) { m ->
             placeholder("<span style=\"color: #808080;\">${m.groupValues[1]}</span>") + m.groupValues[2]
@@ -175,8 +185,10 @@ object MarkdownRenderer {
             placeholder("<span style=\"color: #6897BB;\">${m.value}</span>")
         }
 
-        // Restore all placeholders
-        for (i in placeholders.indices) {
+        // Restore all placeholders in reverse: a later (higher-index) placeholder
+        // can contain an earlier one (e.g. a string span wrapping a linkified
+        // URL), so the outer must be restored before the inner reappears.
+        for (i in placeholders.indices.reversed()) {
             result = result.replace("\u0000PH$i\u0000", placeholders[i])
         }
 
@@ -196,9 +208,10 @@ object MarkdownRenderer {
             "<i>${m.groupValues[1]}</i>"
         }
 
-        // Inline code: `code`
+        // Inline code: `code`. Linkify any URL inside so a backticked link
+        // (Claude often wraps URLs in code spans) is clickable, not just text.
         result = result.replace(Regex("`([^`]+)`")) { m ->
-            "<code style='background-color: #2B2D30; padding: 1px 4px; color: #A9B7C6;'>${m.groupValues[1]}</code>"
+            "<code style='background-color: #2B2D30; padding: 1px 4px; color: #A9B7C6;'>${linkifyEscaped(m.groupValues[1])}</code>"
         }
 
         // Headers: # ## ###
@@ -225,6 +238,36 @@ object MarkdownRenderer {
 
         return result
     }
+
+    // Matches an http(s) URL inside already-HTML-escaped text: stops before an
+    // escaped quote/angle-bracket (a closing string/tag delimiter) or whitespace,
+    // but keeps `&amp;` so query strings survive intact.
+    private val URL_IN_ESCAPED = Regex("https?://(?:(?!&quot;|&lt;|&gt;|&#39;|\\s).)+")
+    // Trailing characters that are almost always punctuation around a URL rather
+    // than part of it (e.g. `(https://x)` or `see https://x.`), trimmed off the
+    // link target so the anchor doesn't swallow them.
+    private const val URL_TRAILING_PUNCT = ").,;:!?"
+
+    /**
+     * Build a clickable anchor for one matched URL, returning the anchor HTML and
+     * any trailing punctuation that should stay *outside* the link.
+     */
+    private fun urlAnchor(matched: String): Pair<String, String> {
+        var url = matched
+        val trailing = StringBuilder()
+        while (url.isNotEmpty() && url.last() in URL_TRAILING_PUNCT) {
+            trailing.insert(0, url.last())
+            url = url.dropLast(1)
+        }
+        return "<a href='$url' style='color: #6897BB;'>$url</a>" to trailing.toString()
+    }
+
+    /** Wrap every bare http(s) URL in already-escaped [text] with a clickable anchor. */
+    internal fun linkifyEscaped(text: String): String =
+        text.replace(URL_IN_ESCAPED) { m ->
+            val (anchor, trailing) = urlAnchor(m.value)
+            anchor + trailing
+        }
 
     internal fun escapeHtml(text: String): String {
         return text
