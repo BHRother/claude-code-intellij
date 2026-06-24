@@ -31,7 +31,6 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
     private val table = JBTable(model)
     private val header = JBLabel()
     private lateinit var skipButton: JButton
-    private lateinit var removeButton: JButton
     private val ticker = Timer(1000) { updateHeader() }
 
     init {
@@ -51,10 +50,9 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
         table.columnModel.getColumn(1).preferredWidth = JBUI.scale(300)
         table.selectionModel.addListSelectionListener { updateButtons() }
 
-        skipButton = JButton("Skip selected").apply { addActionListener { skipSelected() } }
-        removeButton = JButton("Remove selected").apply { addActionListener { removeSelected() } }
+        skipButton = JButton("Skip / Remove selected").apply { addActionListener { dropSelected() } }
         val buttons = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
-            add(skipButton); add(removeButton)
+            add(skipButton)
         }
 
         val panel = JPanel(BorderLayout(0, JBUI.scale(8)))
@@ -69,14 +67,9 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
     // Close-only; the run is stopped on dispose().
     override fun createActions(): Array<Action> = arrayOf(okAction)
 
-    private fun removeSelected() {
+    private fun dropSelected() {
         val row = table.selectedRow
-        if (row in session.items.indices) session.removePending(session.items[row])
-    }
-
-    private fun skipSelected() {
-        val row = table.selectedRow
-        if (row in session.items.indices) session.skipRunning(session.items[row])
+        if (row in session.items.indices) session.drop(session.items[row])
     }
 
     private fun refresh() {
@@ -87,6 +80,8 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
 
     private fun updateHeader() {
         val running = session.running
+        val warmed = session.readyCount
+        val warming = session.warmingCount
         header.text = when {
             session.done -> {
                 val ok = session.items.count { it.state == McpAuthAllSession.State.SUCCESS }
@@ -95,15 +90,15 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
                 }
                 "<html>Done — <b>$ok of $tried</b> authenticated. You can close this.</html>"
             }
-            running.isNotEmpty() -> {
-                val names = running.joinToString(", ") { it.server.name }
+            running != null -> {
                 val remaining = (session.nextDeadline ?: System.currentTimeMillis()) - System.currentTimeMillis()
-                val waiting = session.items.count { it.state == McpAuthAllSession.State.PENDING }
-                val more = if (waiting > 0) " <i>($waiting more queued)</i>" else ""
-                "<html>Signing in to <b>$names</b> — finish each in your browser.$more<br/>" +
-                    "Up to <b>${fmt(remaining)}</b> left for the next one, or select a row and " +
-                    "<b>Skip selected</b> to move on.</html>"
+                val warmNote = if (warmed > 0) " <i>($warmed warmed &amp; ready next)</i>"
+                    else if (warming > 0) " <i>(warming the next up…)</i>" else ""
+                "<html>Signing in to <b>${running.server.name}</b> — finish in your browser.$warmNote<br/>" +
+                    "Up to <b>${fmt(remaining)}</b> left, or select a row and " +
+                    "<b>Skip / Remove selected</b> to move on.</html>"
             }
+            warming > 0 || warmed > 0 -> "<html>Warming up servers in the background…</html>"
             else -> "Preparing…"
         }
     }
@@ -111,8 +106,9 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
     private fun updateButtons() {
         val row = table.selectedRow
         val selected = session.items.getOrNull(row)
-        skipButton.isEnabled = selected?.state == McpAuthAllSession.State.RUNNING
-        removeButton.isEnabled = selected?.state == McpAuthAllSession.State.PENDING
+        // Anything not yet finished can be dropped (removed if queued, otherwise
+        // its warm-up / sign-in is stopped).
+        skipButton.isEnabled = selected?.state in DROPPABLE_STATES
     }
 
     override fun dispose() {
@@ -139,5 +135,14 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
                 " — ${item.detail}" else ""
             return item.state.display + extra
         }
+    }
+
+    companion object {
+        private val DROPPABLE_STATES = setOf(
+            McpAuthAllSession.State.PENDING,
+            McpAuthAllSession.State.WARMING,
+            McpAuthAllSession.State.READY,
+            McpAuthAllSession.State.RUNNING,
+        )
     }
 }

@@ -60,24 +60,39 @@ object McpOAuthFlow {
         ERROR(false, "unexpected error"),
     }
 
-    /** A running auth attempt that can be cancelled (e.g. "Skip" in the batch UI). */
+    /**
+     * A running auth attempt. [cancel] stops it (Skip/Remove). [proceed] presses
+     * Authenticate on a process that's been warmed up and parked at the menu —
+     * used by the batch's warm-pool so activation is instant. In auto-proceed
+     * mode (the single-server path) the driver authenticates on its own and
+     * [proceed] is a no-op.
+     */
     interface AuthHandle {
         fun cancel()
+        fun proceed()
     }
 
     /**
-     * Spawn the PTY flow for one server and return a cancellable handle (or null
-     * if it couldn't even start — in which case [onFinish] has already fired
-     * ERROR). Shared by the single [authenticate] path and the batch session.
+     * Spawn the PTY flow for one server and return a handle (or null if it
+     * couldn't even start — in which case [onFinish] has already fired ERROR).
+     * Shared by the single [authenticate] path and the batch session.
      *
      * [statusProbe] lets a batch caller share one `claude mcp list` health-check
      * across several in-flight drivers (see [McpStatusProbe]); when null each
      * driver polls its own (the single-server path).
+     *
+     * When [autoProceed] is false the driver warms up to the Authenticate prompt,
+     * fires [onReady], then **parks** until [AuthHandle.proceed] (or cancel) —
+     * this is what lets the batch pre-warm several servers and open each browser
+     * the instant the prior sign-in finishes, paying the cold start only once.
+     * When true (default) it authenticates straight through, as before.
      */
     fun spawnAuth(
         project: Project,
         server: McpServer,
         statusProbe: ((String) -> Boolean)? = null,
+        autoProceed: Boolean = true,
+        onReady: () -> Unit = {},
         onFinish: (AuthOutcome) -> Unit,
     ): AuthHandle? {
         if (!isSupported()) { onFinish(AuthOutcome.ERROR); return null }
@@ -102,10 +117,11 @@ object McpOAuthFlow {
             onFinish(AuthOutcome.ERROR)
             return null
         }
-        val driver = Driver(server, workDir, process, statusProbe, onFinish)
+        val driver = Driver(server, workDir, process, statusProbe, autoProceed, onReady, onFinish)
         driver.start()
         return object : AuthHandle {
             override fun cancel() = driver.cancel()
+            override fun proceed() = driver.proceed()
         }
     }
 
@@ -164,14 +180,12 @@ object McpOAuthFlow {
     }
 
     /**
-     * Authenticate a batch of remote servers as a **bounded-concurrency
-     * pipeline** (see [McpAuthAllSession]): up to a few sign-ins run at once, so
-     * each server's spawn/navigate overhead overlaps the previous one's browser
-     * sign-in wait instead of running strictly end-to-end. The cap keeps the tab
-     * cadence sane and bounds the number of hidden claude processes; servers that
-     * pin the same fixed callback port are never overlapped (collision-safe), and
-     * the default dynamic per-process callback port makes the rest safe to run
-     * together. Unix-only (see [isSupported]).
+     * Authenticate a batch of remote servers via a **warm-pool** (see
+     * [McpAuthAllSession]): several servers are pre-warmed to claude's
+     * Authenticate prompt and parked in the background, then activated one at a
+     * time so each browser opens instantly — the cold start is paid ahead of the
+     * user, not per server. Activation is sequential, so only one OAuth callback
+     * port is bound at a time. Unix-only (see [isSupported]).
      */
     fun authenticateAll(project: Project, servers: List<McpServer>) {
         val queue = servers.filter { it.isRemote }
@@ -213,6 +227,8 @@ object McpOAuthFlow {
         private val workDir: String,
         private val process: Process,
         private val statusProbe: ((String) -> Boolean)?,
+        private val autoProceed: Boolean,
+        private val onReady: () -> Unit,
         private val onFinish: (AuthOutcome) -> Unit,
     ) {
         private val input = process.inputStream
@@ -225,6 +241,11 @@ object McpOAuthFlow {
         // Set when claude reports the provider can't do OAuth (e.g. GitHub, which
         // is token-based) — surfaced to the user so they don't just see nothing.
         @Volatile private var authError: String? = null
+        // Park gate: opened by proceed() (authenticate now) or cancel() (skip).
+        // `proceeded` distinguishes the two once the latch releases.
+        private val gate = java.util.concurrent.CountDownLatch(1)
+        @Volatile private var proceeded = false
+        @Volatile private var parked = false
 
         fun start() {
             Thread({
@@ -233,25 +254,51 @@ object McpOAuthFlow {
                     finish(AuthOutcome.ERROR)
                 }
             }, "mcp-oauth-drive").apply { isDaemon = true; start() }
-            // Backstop watchdog: no matter what drive() does, guarantee the flow
-            // finishes (and the batch advances) within a hard cap. finish() is
-            // idempotent, so this is harmless if the flow already completed.
+            // Warm-up watchdog: if we never even reach the parked/authenticating
+            // state within the cap, give up. Once parked we wait indefinitely for
+            // the user (no timeout); the sign-in clock starts at proceed().
             Thread({
-                sleep(WATCHDOG_MS)
-                if (!finished) {
-                    DebugLog.log("mcp-oauth", "watchdog firing for '${server.name}' after ${WATCHDOG_MS}ms")
-                    finish(AuthOutcome.TIMED_OUT)
+                sleep(WARMUP_WATCHDOG_MS)
+                if (!finished && !parked && !proceeded) {
+                    DebugLog.log("mcp-oauth", "warm-up watchdog firing for '${server.name}'")
+                    finish(AuthOutcome.MENU_FAILED)
                 }
-            }, "mcp-oauth-watchdog").apply { isDaemon = true; start() }
+            }, "mcp-oauth-warm-watchdog").apply { isDaemon = true; start() }
         }
 
         /** Skip this server: stop now and report SKIPPED (advances the batch). */
         fun cancel() {
             skipped = true
+            gate.countDown()   // release a parked warm-up so it can unwind
             finish(AuthOutcome.SKIPPED)
         }
 
+        /** Activate a parked (warmed-up) server: press Authenticate and sign in. */
+        fun proceed() {
+            if (finished || skipped) return
+            proceeded = true
+            gate.countDown()
+        }
+
         private fun drive() {
+            warmUp() ?: return          // null = warm-up already finished (failure)
+            if (autoProceed) {
+                proceeded = true        // single-server path authenticates straight through
+            } else {
+                parked = true
+                onReady()               // tell the batch this server is ready to activate
+                gate.await()            // park until proceed()/cancel()
+            }
+            if (skipped || finished) return finish(AuthOutcome.SKIPPED)
+            authenticate()
+        }
+
+        /**
+         * Steps 1–4: drive claude to the server's detail view with
+         * "❯ 1. Authenticate" pre-selected. Returns Unit on success, or null when
+         * it already terminated via [finish] (gate/onboarding/menu/list failure).
+         */
+        private fun warmUp(): Unit? {
             // 1. Wait for the REPL, clearing onboarding gates (trust folder /
             //    approve new MCP server) as they appear. Each decision is made on
             //    a FRESH settled frame so we never react to stale scrollback.
@@ -276,7 +323,7 @@ object McpOAuthFlow {
             }
             if (!has(menu, "to navigate", "manage mcp server")) {
                 DebugLog.log("mcp-oauth", "MCP menu did not open; tail=${tail(menu)}")
-                return finish(AuthOutcome.MENU_FAILED)
+                finish(AuthOutcome.MENU_FAILED); return null
             }
 
             // 3. Step-and-verify navigate the ↑/↓ list to our server (first item is
@@ -288,18 +335,35 @@ object McpOAuthFlow {
                 send(DOWN); cur = settle(450, 4_000)
             }
             DebugLog.log("mcp-oauth", "navigated to '${server.name}'=$reached")
-            if (!reached) return finish(AuthOutcome.NOT_IN_LIST)
+            if (!reached) { finish(AuthOutcome.NOT_IN_LIST); return null }
 
             // 4. Open the server detail; "❯ 1. Authenticate" is pre-selected there.
             send(ENTER)
             val detail = settle(800, 8_000)
             // If claude already reported it can't OAuth this provider (e.g. a
             // misconfigured token-based server), bail now instead of waiting.
-            if (authError != null) return finish(AuthOutcome.NEEDS_TOKEN)
+            if (authError != null) { finish(AuthOutcome.NEEDS_TOKEN); return null }
             if (!has(detail, "authenticate")) {
                 DebugLog.log("mcp-oauth", "no Authenticate action; tail=${tail(detail)}")
-                return finish(AuthOutcome.NO_AUTH_ACTION)
+                finish(AuthOutcome.NO_AUTH_ACTION); return null
             }
+            DebugLog.log("mcp-oauth", "warmed up & parked at Authenticate for '${server.name}'")
+            return Unit
+        }
+
+        /**
+         * Steps 5–6: press Authenticate (claude opens the browser), then wait for
+         * sign-in. A sign-in watchdog bounds this phase — distinct from warm-up,
+         * since a server may sit parked for a long time before the user gets to it.
+         */
+        private fun authenticate() {
+            Thread({
+                sleep(WATCHDOG_MS)
+                if (!finished) {
+                    DebugLog.log("mcp-oauth", "sign-in watchdog firing for '${server.name}'")
+                    finish(AuthOutcome.TIMED_OUT)
+                }
+            }, "mcp-oauth-signin-watchdog").apply { isDaemon = true; start() }
 
             // 5. Trigger it — claude opens the browser to finish OAuth.
             send(ENTER)
@@ -461,6 +525,10 @@ object McpOAuthFlow {
             // Hard per-server cap (a bit above the 180s sign-in wait + graceful
             // quit) so one slow/stuck server can never block the rest of a batch.
             private const val WATCHDOG_MS = 210_000L
+            // Warm-up cap: time to reach the parked-at-Authenticate state. Once
+            // parked we wait indefinitely for the user, so this only guards the
+            // spawn → /mcp → navigate phase, which is normally a few seconds.
+            private const val WARMUP_WATCHDOG_MS = 45_000L
             // Status polling: first check after a short head-start, then steadily.
             // Kept tight so an instant sign-in is confirmed quickly; the shared
             // probe (batch) coalesces overlapping polls into one CLI call, so a

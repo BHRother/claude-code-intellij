@@ -1,5 +1,6 @@
 package com.claudecode.settings
 
+import com.claudecode.mcp.McpAuthAllSession
 import com.claudecode.session.ClaudeSession
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
@@ -304,6 +305,15 @@ class ClaudeSettingsConfigurable : Configurable {
                         "Add, edit, remove and authenticate MCP servers across project / local / user " +
                             "scopes. Also available from the Claude Code tool-window toolbar."
                     )
+                }
+                row("\"Authenticate All\" warm-up pool:") {
+                    spinner(1..McpAuthAllSession.POOL_MAX)
+                        .bindIntValue(settings.state::mcpAuthWarmPoolSize)
+                        .comment(
+                            "How many servers to pre-warm to the sign-in prompt at once, so each browser " +
+                                "opens instantly. Higher = fewer waits but more concurrent <code>claude</code> " +
+                                "processes (memory). Grows automatically if you sign in faster than warm-up."
+                        )
                 }
             }
             group("Settings Files") {

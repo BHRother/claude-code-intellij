@@ -53,7 +53,12 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         // stream-json` process per session and stream messages over stdin,
         // instead of one process per turn. Off by default; the one-shot path is
         // unchanged. See ClaudeSession + docs/streaming-session-spike.md.
-        var streamingSession: Boolean = false
+        var streamingSession: Boolean = false,
+        // "Authenticate All" warm-pool depth: how many servers to pre-warm to the
+        // Authenticate prompt and park, so each browser opens instantly. Higher =
+        // fewer perceived cold starts but more concurrent claude processes/memory.
+        // The session grows the effective pool adaptively if the user out-paces it.
+        var mcpAuthWarmPoolSize: Int = 4
     )
 
     private var myState = State()
