@@ -756,6 +756,39 @@ class ClaudeSessionTest {
             assertEquals("only listener2", listener2.lastText)
         }
     }
+
+    @Nested
+    inner class PermissionDenialDetection {
+        @Test
+        fun `detects outside-working-directory read denial`() {
+            // Exact wording the CLI returns for a Read outside the work dirs.
+            val msg = "Claude requested permissions to read from /tmp/x/secret.txt, " +
+                "but you haven't granted it yet."
+            assertTrue(session.looksLikePermissionDenial(msg))
+        }
+
+        @Test
+        fun `extracts tool_result text from a bare string`() {
+            val el = JsonParser.parseString("\"haven't granted it yet\"")
+            assertEquals("haven't granted it yet", session.extractToolResultText(el))
+        }
+
+        @Test
+        fun `extracts tool_result text from an array of text blocks`() {
+            val el = JsonParser.parseString(
+                """[{"type":"text","text":"requested permissions to read from /x"},
+                   {"type":"text","text":"but you haven't granted it yet"}]"""
+            )
+            val text = session.extractToolResultText(el)
+            assertNotNull(text)
+            assertTrue(session.looksLikePermissionDenial(text!!))
+        }
+
+        @Test
+        fun `null content yields null text`() {
+            assertNull(session.extractToolResultText(null))
+        }
+    }
 }
 
 /**

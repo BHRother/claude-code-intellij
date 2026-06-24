@@ -1138,26 +1138,13 @@ class SessionPanel(
             "$head: ${pending.answers[i]?.joinToString(", ").orEmpty()}"
         }
         clearPendingAsk()
-        appendUserMessage(msg)
-        sendAnswerWhenReady(msg)
-    }
-
-    /** Sends the user's answer once the (just-finishing) turn is idle. */
-    private fun sendAnswerWhenReady(text: String, attempt: Int = 0) {
-        if (!session.isBusy) {
-            permissionHintShown = false
-            resetFailureDedupe()
-            setBusyState(true)
-            scrollOutputToBottom()
-            session.sendMessage(text)
-            return
-        }
-        if (attempt >= MAX_RETRY_POLL_ATTEMPTS) {
-            appendHtml("<div class='system-msg' style='color:#D9B263;'>" +
-                "⚠ Couldn't send your answer automatically — send it manually.</div>")
-            return
-        }
-        ApplicationManager.getApplication().invokeLater { sendAnswerWhenReady(text, attempt + 1) }
+        // The asking turn is usually still wrapping up when the user answers
+        // (in -p/stream mode the CLI errors the AskUserQuestion tool, emits its
+        // dismissal text, then ends the turn). Route the answer through the same
+        // event-driven queue a normally-typed message uses: if busy it sends the
+        // instant onFinished drains the queue, with no fixed-timeout race that
+        // could give up first. dispatchMessage / the drain append it to the chat.
+        if (session.isBusy) enqueueMessage(msg) else dispatchMessage(msg)
     }
 
     /** Dismiss the choice bar (questions or permission grants) and any pending question. */
@@ -1676,9 +1663,13 @@ class SessionPanel(
             )
             return
         }
-        ApplicationManager.getApplication().invokeLater {
-            scheduleRetryAfterGrant(prompt, attempt + 1)
-        }
+        // Real delay between polls: session.stop() kills the process
+        // asynchronously and isBusy only clears once onFinished fires, which
+        // takes a moment. A zero-delay invokeLater chain burns all attempts in
+        // milliseconds — before the process dies — so the retry never happens.
+        // A single-shot Swing Timer fires the next poll on the EDT after a beat.
+        javax.swing.Timer(IDLE_POLL_DELAY_MS) { scheduleRetryAfterGrant(prompt, attempt + 1) }
+            .apply { isRepeats = false; start() }
     }
 
     private fun renderGrantResult(result: com.claudecode.project.ProjectAllowlist.Result) {
@@ -1959,8 +1950,10 @@ class SessionPanel(
         private const val RESUME_PREAMBLE_ID = "resume-preamble"
         /** Max length of the inline error snippet on a "✗ failed" badge. */
         private const val FAILURE_SNIPPET_MAX = 140
-        /** Bound on the post-grant retry-poll loop — ~30 invokeLater ticks. */
+        /** Bound on the post-grant retry-poll loop — 30 ticks × delay ≈ 6s. */
         private const val MAX_RETRY_POLL_ATTEMPTS = 30
+        /** Delay between retry-poll ticks; gives the stopped process time to exit. */
+        private const val IDLE_POLL_DELAY_MS = 200
         /** A turn that took at least this long fires a desktop notification when the panel isn't focused. */
         private const val LONG_TASK_NOTIFY_THRESHOLD_MS = 20_000L
 

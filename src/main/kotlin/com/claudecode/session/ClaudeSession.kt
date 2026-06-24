@@ -700,13 +700,12 @@ class ClaudeSession(
                     if (obj.get("type")?.asString != "tool_result") continue
                     val toolUseId = obj.get("tool_use_id")?.asString
                     val isError = obj.get("is_error")?.asBoolean ?: false
-                    // tool_result.content can be a bare string OR an array
-                    // of typed blocks. We just need the text for the UI badge,
-                    // so handle the simple-string case and fall back to null
-                    // (the array case carries non-text data we don't surface).
-                    val resultContent = obj.get("content")?.let {
-                        if (it.isJsonPrimitive) it.asString else null
-                    }
+                    // tool_result.content can be a bare string OR an array of
+                    // typed blocks. Extract text from both so a permission
+                    // denial that arrives as text blocks (not a bare string)
+                    // is still detected below — otherwise the "blocked, switch
+                    // to Unrestricted?" hint sometimes wouldn't fire.
+                    val resultContent = extractToolResultText(obj.get("content"))
                     if (toolUseId != null && toolUseId != askQuestionActiveToolUseId) {
                         listeners.forEach { it.onToolResult(this, toolUseId, isError, resultContent) }
                     }
@@ -792,6 +791,28 @@ class ClaudeSession(
             ?: candidates.firstOrNull()
             ?: return null
         return first.take(300)
+    }
+
+    /**
+     * Pull the human-readable text out of a tool_result `content` field, which
+     * the CLI emits either as a bare string or as an array of typed blocks
+     * (`{"type":"text","text":"…"}`). Returns null when there's no text to show.
+     */
+    internal fun extractToolResultText(content: com.google.gson.JsonElement?): String? {
+        if (content == null || content.isJsonNull) return null
+        if (content.isJsonPrimitive) return content.asString.takeIf { it.isNotBlank() }
+        if (content.isJsonArray) {
+            val sb = StringBuilder()
+            for (el in content.asJsonArray) {
+                val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                if (o.get("type")?.asString != "text") continue
+                val t = o.get("text")?.asString ?: continue
+                if (sb.isNotEmpty()) sb.append("\n")
+                sb.append(t)
+            }
+            return sb.toString().takeIf { it.isNotBlank() }
+        }
+        return null
     }
 
     internal fun looksLikePermissionDenial(toolResultContent: String): Boolean {
