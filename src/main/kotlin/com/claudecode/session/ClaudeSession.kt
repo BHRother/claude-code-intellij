@@ -190,14 +190,24 @@ class ClaudeSession(
         val claudePath = resolution.resolvedPath
 
         // No `script` PTY wrapper: stream-json over pipes flushes per event
-        // (verified by the spike). No --resume / no prompt arg — the
-        // conversation lives in this process.
+        // (verified by the spike).
         val args = mutableListOf(
             claudePath, "-p",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
         )
+        // Resume the prior conversation when we already have a session_id:
+        //   - a session opened from the Recent dropdown (initialSessionId), or
+        //   - a process that crashed mid-session and is being re-spawned.
+        // Without this the new process starts a blank conversation under a
+        // fresh session_id, orphaning the existing transcript and breaking
+        // history continuity. `--resume` with stream-json input preserves the
+        // same session_id (verified against the CLI), so the transcript and
+        // the Recent-sessions snapshot keep pointing at one file. After /clear,
+        // resetConversation() nulls sessionId, so a fresh chat still starts
+        // clean.
+        sessionId?.let { args.add("--resume"); args.add(it) }
         val model = (modelOverride ?: settings.model)
         if (model.isNotBlank()) { args.add("--model"); args.add(model) }
         val permMode = (permissionModeOverride ?: settings.permissionMode)
