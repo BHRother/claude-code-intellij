@@ -69,8 +69,17 @@ object McpOAuthFlow {
      * Spawn the PTY flow for one server and return a cancellable handle (or null
      * if it couldn't even start — in which case [onFinish] has already fired
      * ERROR). Shared by the single [authenticate] path and the batch session.
+     *
+     * [statusProbe] lets a batch caller share one `claude mcp list` health-check
+     * across several in-flight drivers (see [McpStatusProbe]); when null each
+     * driver polls its own (the single-server path).
      */
-    fun spawnAuth(project: Project, server: McpServer, onFinish: (AuthOutcome) -> Unit): AuthHandle? {
+    fun spawnAuth(
+        project: Project,
+        server: McpServer,
+        statusProbe: ((String) -> Boolean)? = null,
+        onFinish: (AuthOutcome) -> Unit,
+    ): AuthHandle? {
         if (!isSupported()) { onFinish(AuthOutcome.ERROR); return null }
         val workDir = project.basePath ?: System.getProperty("user.home")
         val configured = ClaudeSettings.getInstance().state.claudePath
@@ -93,7 +102,7 @@ object McpOAuthFlow {
             onFinish(AuthOutcome.ERROR)
             return null
         }
-        val driver = Driver(server, workDir, process, onFinish)
+        val driver = Driver(server, workDir, process, statusProbe, onFinish)
         driver.start()
         return object : AuthHandle {
             override fun cancel() = driver.cancel()
@@ -115,7 +124,7 @@ object McpOAuthFlow {
         if (!isSupported()) { onFinish?.invoke(AuthOutcome.ERROR); return false }
         val isBatch = onFinish != null
         val reporter = onFinish ?: { outcome -> reportSingle(project, server, outcome) }
-        val handle = spawnAuth(project, server, reporter)
+        val handle = spawnAuth(project, server, onFinish = reporter)
         // The batch shows its own per-step progress, so skip the per-server banner.
         if (handle != null && !isBatch) notifyStarted(project, server)
         return handle != null
@@ -155,11 +164,14 @@ object McpOAuthFlow {
     }
 
     /**
-     * Authenticate a batch of remote servers **one at a time**: each server's
-     * browser tab opens, the user signs in, and only when that flow finishes
-     * (the prior claude process has exited) does the next begin. Sequential — not
-     * parallel — to avoid N hidden claude processes at once and callback-port
-     * collisions between servers. Unix-only (see [isSupported]).
+     * Authenticate a batch of remote servers as a **bounded-concurrency
+     * pipeline** (see [McpAuthAllSession]): up to a few sign-ins run at once, so
+     * each server's spawn/navigate overhead overlaps the previous one's browser
+     * sign-in wait instead of running strictly end-to-end. The cap keeps the tab
+     * cadence sane and bounds the number of hidden claude processes; servers that
+     * pin the same fixed callback port are never overlapped (collision-safe), and
+     * the default dynamic per-process callback port makes the rest safe to run
+     * together. Unix-only (see [isSupported]).
      */
     fun authenticateAll(project: Project, servers: List<McpServer>) {
         val queue = servers.filter { it.isRemote }
@@ -200,6 +212,7 @@ object McpOAuthFlow {
         private val server: McpServer,
         private val workDir: String,
         private val process: Process,
+        private val statusProbe: ((String) -> Boolean)?,
         private val onFinish: (AuthOutcome) -> Unit,
     ) {
         private val input = process.inputStream
@@ -377,8 +390,10 @@ object McpOAuthFlow {
 
         /** Authoritative success check: does `claude mcp list` now report Connected? */
         private fun pollConnected(): Boolean {
-            val connected = runCatching { cli.list()[server.name] == McpServerStatus.CONNECTED }
-                .getOrDefault(false)
+            // A shared probe (batch) coalesces the health-check across drivers;
+            // the single-server path falls back to this driver's own CLI.
+            val connected = statusProbe?.invoke(server.name)
+                ?: runCatching { cli.list()[server.name] == McpServerStatus.CONNECTED }.getOrDefault(false)
             if (connected) DebugLog.log("mcp-oauth", "poll: '${server.name}' is connected")
             return connected
         }
@@ -447,8 +462,11 @@ object McpOAuthFlow {
             // quit) so one slow/stuck server can never block the rest of a batch.
             private const val WATCHDOG_MS = 210_000L
             // Status polling: first check after a short head-start, then steadily.
-            private const val FIRST_POLL_MS = 8_000L
-            private const val POLL_INTERVAL_MS = 5_000L
+            // Kept tight so an instant sign-in is confirmed quickly; the shared
+            // probe (batch) coalesces overlapping polls into one CLI call, so a
+            // lower floor here doesn't multiply subprocess cost across drivers.
+            private const val FIRST_POLL_MS = 2_500L
+            private const val POLL_INTERVAL_MS = 3_000L
 
             private const val ENTER = "\r"
             private const val DOWN = "\u001B[B"   // ANSI cursor-down

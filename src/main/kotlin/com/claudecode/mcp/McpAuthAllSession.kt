@@ -7,12 +7,21 @@ import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.project.Project
 
 /**
- * Drives "Authenticate All" sequentially and exposes live state for the dialog:
- * each server's progress, the current sign-in deadline (for a countdown), and
- * controls to skip the current attempt or drop pending ones. Every state change
- * is marshalled onto the EDT so the dialog reads it without extra locking, and a
- * summary notification is posted when the run ends (so the result is visible even
- * if the dialog was closed).
+ * Drives "Authenticate All" as a **bounded-concurrency pipeline** and exposes
+ * live state for the dialog. Up to [MAX_CONCURRENT] servers sign in at once: as
+ * soon as one finishes, the next pending server's flow starts — so the spawn /
+ * navigate overhead of later servers overlaps the browser sign-in wait of the
+ * earlier ones, instead of running strictly one-after-another.
+ *
+ * Concurrency is capped (not unbounded) so the user gets a steady cadence of
+ * browser tabs rather than all of them at once. Two servers that pin the **same
+ * fixed OAuth callback port** are never run together (they'd collide on the
+ * loopback redirect); everything else — claude's default dynamic per-process
+ * callback port — is safe to overlap. All in-flight drivers share one
+ * [McpStatusProbe] so the success poll is a single `claude mcp list` per window.
+ *
+ * Every state change is marshalled onto the EDT so the dialog reads it without
+ * extra locking, and a summary notification is posted when the run ends.
  */
 class McpAuthAllSession(private val project: Project, servers: List<McpServer>) {
 
@@ -28,13 +37,12 @@ class McpAuthAllSession(private val project: Project, servers: List<McpServer>) 
     inner class Item(val server: McpServer) {
         @Volatile var state: State = State.PENDING
         @Volatile var detail: String = ""
+        /** Epoch-ms sign-in deadline while RUNNING (drives this row's countdown); null otherwise. */
+        @Volatile var deadline: Long? = null
+        @Volatile var handle: McpOAuthFlow.AuthHandle? = null
     }
 
     val items: List<Item> = servers.map { Item(it) }
-
-    /** Epoch-ms deadline of the current sign-in (for the countdown); null when idle. */
-    @Volatile var currentDeadline: Long? = null
-        private set
 
     @Volatile var done: Boolean = false
         private set
@@ -42,46 +50,79 @@ class McpAuthAllSession(private val project: Project, servers: List<McpServer>) 
     /** Called on the EDT whenever anything changes; the dialog re-renders. */
     var onChange: (() -> Unit)? = null
 
-    private var handle: McpOAuthFlow.AuthHandle? = null
+    /** One health-check source shared by all in-flight drivers (off-EDT use only). */
+    private val probe by lazy { McpStatusProbe(project.basePath) }
 
-    val current: Item? get() = items.firstOrNull { it.state == State.RUNNING }
+    /** Servers currently signing in (0..[MAX_CONCURRENT]). */
+    val running: List<Item> get() = items.filter { it.state == State.RUNNING }
 
-    fun start() = onEdt { runNext() }
+    /** The soonest sign-in deadline among in-flight servers (for the header countdown). */
+    val nextDeadline: Long? get() = running.mapNotNull { it.deadline }.minOrNull()
 
-    /** Skip the server currently signing in (advances to the next). */
-    fun skipCurrent() = onEdt { handle?.cancel() }
+    fun start() = onEdt { pump() }
+
+    /** Stop a server that's currently signing in (advances the pipeline). */
+    fun skipRunning(item: Item) = onEdt {
+        if (item.state == State.RUNNING) item.handle?.cancel()
+    }
 
     /** Drop a not-yet-started server from the queue. */
     fun removePending(item: Item) = onEdt {
         if (item.state == State.PENDING) {
             item.state = State.REMOVED
-            fire()
+            pump()
         }
     }
 
-    /** Drop everything still pending and stop the current attempt. */
+    /** Drop everything still pending and stop every in-flight attempt. */
     fun cancelAll() = onEdt {
         items.filter { it.state == State.PENDING }.forEach { it.state = State.REMOVED }
-        handle?.cancel()   // the current attempt (if any) finishes SKIPPED → runNext → done
-        if (current == null) runNext()
+        val live = running
+        live.forEach { it.handle?.cancel() }   // each finishes SKIPPED → pump → done
+        if (live.isEmpty()) pump()
     }
 
-    private fun runNext() {
-        val item = items.firstOrNull { it.state == State.PENDING }
-        if (item == null) {
-            currentDeadline = null
-            handle = null
+    /**
+     * Start as many pending servers as the concurrency cap and port-collision
+     * rules allow, then report completion when nothing is left in flight.
+     */
+    private fun pump() {
+        while (running.size < MAX_CONCURRENT) {
+            val next = nextStartable() ?: break
+            startItem(next)
+        }
+        if (running.isEmpty() && items.none { it.state == State.PENDING }) {
             if (!done) {
                 done = true
                 notifyDone()
             }
-            fire()
-            return
         }
-        item.state = State.RUNNING
-        currentDeadline = System.currentTimeMillis() + McpOAuthFlow.SIGN_IN_TIMEOUT_MS
         fire()
-        handle = McpOAuthFlow.spawnAuth(project, item.server) { outcome ->
+    }
+
+    /**
+     * The next pending server we may start now: skipped if it pins a fixed
+     * callback port already held by an in-flight server (they'd collide on the
+     * loopback redirect). Such a server starts once the holder finishes.
+     */
+    private fun nextStartable(): Item? {
+        val busyPorts = running.mapNotNull { it.server.callbackPort }.toSet()
+        return items.firstOrNull {
+            it.state == State.PENDING &&
+                (it.server.callbackPort == null || it.server.callbackPort !in busyPorts)
+        }
+    }
+
+    private fun startItem(item: Item) {
+        item.state = State.RUNNING
+        item.deadline = System.currentTimeMillis() + McpOAuthFlow.SIGN_IN_TIMEOUT_MS
+        // onFinish always re-posts via onEdt → invokeLater, so even a synchronous
+        // spawn failure can't re-enter pump() inside this loop.
+        item.handle = McpOAuthFlow.spawnAuth(
+            project,
+            item.server,
+            statusProbe = { name -> probe.isConnected(name) },
+        ) { outcome ->
             onEdt {
                 item.state = when {
                     outcome.ok -> State.SUCCESS
@@ -89,14 +130,11 @@ class McpAuthAllSession(private val project: Project, servers: List<McpServer>) 
                     else -> State.FAILED
                 }
                 item.detail = outcome.summary
-                handle = null
-                currentDeadline = null
-                fire()
-                runNext()
+                item.handle = null
+                item.deadline = null
+                pump()   // fill the freed slot and/or finish
             }
         }
-        // spawnAuth(...) == null means it already reported ERROR via the callback
-        // above (which advances), so there's nothing extra to do here.
     }
 
     private fun notifyDone() {
@@ -124,4 +162,9 @@ class McpAuthAllSession(private val project: Project, servers: List<McpServer>) 
     /** Always hop to the EDT (even if already on it) so callbacks never re-enter. */
     private fun onEdt(block: () -> Unit) =
         ApplicationManager.getApplication().invokeLater(block, ModalityState.any())
+
+    companion object {
+        /** Max servers signing in at once — a steady tab cadence, not all-at-once. */
+        const val MAX_CONCURRENT = 3
+    }
 }

@@ -51,7 +51,7 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
         table.columnModel.getColumn(1).preferredWidth = JBUI.scale(300)
         table.selectionModel.addListSelectionListener { updateButtons() }
 
-        skipButton = JButton("Skip current").apply { addActionListener { session.skipCurrent() } }
+        skipButton = JButton("Skip selected").apply { addActionListener { skipSelected() } }
         removeButton = JButton("Remove selected").apply { addActionListener { removeSelected() } }
         val buttons = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
             add(skipButton); add(removeButton)
@@ -74,6 +74,11 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
         if (row in session.items.indices) session.removePending(session.items[row])
     }
 
+    private fun skipSelected() {
+        val row = table.selectedRow
+        if (row in session.items.indices) session.skipRunning(session.items[row])
+    }
+
     private fun refresh() {
         model.fireTableDataChanged()
         updateHeader()
@@ -81,7 +86,7 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
     }
 
     private fun updateHeader() {
-        val current = session.current
+        val running = session.running
         header.text = when {
             session.done -> {
                 val ok = session.items.count { it.state == McpAuthAllSession.State.SUCCESS }
@@ -90,20 +95,24 @@ class McpAuthAllDialog(project: Project, private val session: McpAuthAllSession)
                 }
                 "<html>Done — <b>$ok of $tried</b> authenticated. You can close this.</html>"
             }
-            current != null -> {
-                val remaining = (session.currentDeadline ?: System.currentTimeMillis()) - System.currentTimeMillis()
-                "<html>Signing in to <b>${current.server.name}</b> — finish in your browser. " +
-                    "Waiting up to <b>${fmt(remaining)}</b>, or click <b>Skip current</b> to move on.</html>"
+            running.isNotEmpty() -> {
+                val names = running.joinToString(", ") { it.server.name }
+                val remaining = (session.nextDeadline ?: System.currentTimeMillis()) - System.currentTimeMillis()
+                val waiting = session.items.count { it.state == McpAuthAllSession.State.PENDING }
+                val more = if (waiting > 0) " <i>($waiting more queued)</i>" else ""
+                "<html>Signing in to <b>$names</b> — finish each in your browser.$more<br/>" +
+                    "Up to <b>${fmt(remaining)}</b> left for the next one, or select a row and " +
+                    "<b>Skip selected</b> to move on.</html>"
             }
             else -> "Preparing…"
         }
     }
 
     private fun updateButtons() {
-        skipButton.isEnabled = session.current != null
         val row = table.selectedRow
-        removeButton.isEnabled = row in session.items.indices &&
-            session.items[row].state == McpAuthAllSession.State.PENDING
+        val selected = session.items.getOrNull(row)
+        skipButton.isEnabled = selected?.state == McpAuthAllSession.State.RUNNING
+        removeButton.isEnabled = selected?.state == McpAuthAllSession.State.PENDING
     }
 
     override fun dispose() {
