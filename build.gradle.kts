@@ -13,9 +13,9 @@ group = "com.claudecode"
 // "Install Plugin from Disk" in IntelliJ never short-circuits on "same
 // version, treat as no-op" — that misbehaviour cost us a couple of debug
 // rounds. Pass `-Prelease` for the canonical release version.
-//   ./gradlew buildPlugin            → claude-code-intellij-1.2.1-dev.YYYYMMDDhhmmss.zip
-//   ./gradlew buildPlugin -Prelease  → claude-code-intellij-1.2.1.zip
-val baseVersion = "1.2.1"
+//   ./gradlew buildPlugin            → claude-code-intellij-1.2.2-dev.YYYYMMDDhhmmss.zip
+//   ./gradlew buildPlugin -Prelease  → claude-code-intellij-1.2.2.zip
+val baseVersion = "1.2.2"
 val isRelease = project.hasProperty("release")
 version = if (isRelease) {
     baseVersion

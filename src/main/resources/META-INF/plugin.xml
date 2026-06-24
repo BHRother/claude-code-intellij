@@ -90,6 +90,15 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.2.2</h3>
+    <ul>
+        <li><b>Authenticate All — pre-warmed, near-instant sign-ins</b> — instead of cold-starting a hidden <code>claude</code> for each server in turn, several are now <b>warmed up in the background</b> to the sign-in prompt and parked there, then activated one at a time so each browser opens almost instantly. You pay the cold start once, then sign in to each tab in quick succession. The warm-up pool size is configurable (Settings → MCP Servers) and grows automatically if you sign in faster than servers warm up; Skip / Remove drops a server and tears down its pre-warmed process.</li>
+        <li><b>Clickable links in code</b> — URLs inside fenced code blocks and inline <code>`code`</code> spans are now clickable, not just plain text you had to copy/paste. (Prose URLs were already clickable.)</li>
+        <li><b>Fix: answering a question no longer fails with "send it manually"</b> — submitting an answer to one of Claude's multiple-choice questions while the asking turn was still finishing could give up instantly. The answer now queues and sends the moment the turn ends.</li>
+        <li><b>Fix: "Switch to Unrestricted" / Allow now actually retries</b> — granting a permission (or switching mode) after a blocked tool stopped the request but often failed to resend it, because the retry gave up before the process finished stopping. It now waits properly and re-runs your prompt. Reading a file outside the working directory reliably surfaces the grant / Unrestricted choices, including when the denial arrives as structured text blocks.</li>
+        <li><b>Fix: streaming session resumes correctly</b> — in the experimental streaming mode, resuming a saved chat (or recovering after a restart) now continues the same conversation via <code>--resume</code> instead of silently starting a blank one under a new id.</li>
+    </ul>
+
     <h3>1.2.1</h3>
     <ul>
         <li><b>Authenticate All — live progress &amp; faster advancement</b> — a non-modal panel now lists every queued server (waiting / authenticating / done / failed / skipped), shows the current server with a <b>countdown</b> of how long it'll wait, and lets you <b>Skip current</b> or <b>Remove</b> a pending server to avoid the wait. Each server advances the <i>moment it connects</i>: instead of waiting out a timeout while scraping the terminal, the flow polls <code>claude mcp list</code> (the same live health check as Refresh) and proceeds as soon as the server reports connected, then tears down promptly. One stuck or misconfigured server can no longer block the rest.</li>
