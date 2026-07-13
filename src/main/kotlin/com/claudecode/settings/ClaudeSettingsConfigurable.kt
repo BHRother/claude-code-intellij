@@ -155,14 +155,55 @@ class ClaudeSettingsConfigurable : Configurable {
                             "Claude has already responded with this session is also offered."
                     )
                 }
-                row("Font size:") {
-                    spinner(8..32)
-                        .bindIntValue(settings.state::fontSize)
-                        .comment("Applies to new sessions")
-                }
                 row("Max sessions:") {
                     spinner(1..20)
                         .bindIntValue(settings.state::maxSessions)
+                }
+            }
+            group("Appearance") {
+                row("Theme:") {
+                    val modes = com.claudecode.ClaudeConstants.THEME_MODES
+                    comboBox(modes, friendlyThemeRenderer())
+                        .bindItem(
+                            { settings.state.appearanceThemeMode.takeIf { it in modes }
+                                ?: com.claudecode.ClaudeConstants.THEME_FOLLOW_IDE },
+                            { settings.state.appearanceThemeMode = it ?: com.claudecode.ClaudeConstants.THEME_FOLLOW_IDE }
+                        )
+                        .comment(
+                            "<b>Follow IDE theme</b> matches the IDE's light/dark theme and blends in its " +
+                                "editor colors — so a light IDE no longer shows a dark \"terminal\" chat. " +
+                                "<b>Dark</b> / <b>Light</b> pin one palette regardless of the IDE. " +
+                                "Applies to newly opened chats."
+                        )
+                }
+                row("Chat font:") {
+                    comboBox(fontFamilyItems(), fontFamilyRenderer())
+                        .bindItem(
+                            { settings.state.chatFontFamily },
+                            { settings.state.chatFontFamily = it ?: "" }
+                        )
+                    label("Size:")
+                    spinner(8..32)
+                        .bindIntValue(settings.state::fontSize)
+                }
+                row("") {
+                    comment("Font for the chat transcript. <b>Default</b> = JetBrains Mono. Applies to new sessions.")
+                }
+                row("Input font:") {
+                    comboBox(fontFamilyItems(), fontFamilyRenderer())
+                        .bindItem(
+                            { settings.state.inputFontFamily },
+                            { settings.state.inputFontFamily = it ?: "" }
+                        )
+                    label("Size:")
+                    spinner(0..32)
+                        .bindIntValue(settings.state::inputFontSize)
+                }
+                row("") {
+                    comment(
+                        "Font for the message box you type in. <b>Default</b> = JetBrains Mono; " +
+                            "size <b>0</b> inherits the chat font size. Applies to new sessions."
+                    )
                 }
             }
             group("Model & inference") {
@@ -346,6 +387,9 @@ class ClaudeSettingsConfigurable : Configurable {
 
     override fun apply() {
         panel?.apply()
+        // Let open chat panels re-theme in place (theme mode / fonts may have changed).
+        com.intellij.openapi.application.ApplicationManager.getApplication()
+            .messageBus.syncPublisher(ClaudeAppearanceListener.TOPIC).appearanceChanged()
     }
 
     override fun reset() {
@@ -481,6 +525,35 @@ class ClaudeSettingsConfigurable : Configurable {
         ): java.awt.Component {
             val raw = value?.toString() ?: ""
             val label = com.claudecode.ClaudeConstants.shortEffortLabel(raw)
+            return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
+        }
+    }
+
+    private fun friendlyThemeRenderer(): DefaultListCellRenderer = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?, value: Any?, index: Int,
+            isSelected: Boolean, cellHasFocus: Boolean
+        ): java.awt.Component {
+            val raw = value?.toString() ?: ""
+            val label = com.claudecode.ClaudeConstants.shortThemeModeLabel(raw)
+            return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
+        }
+    }
+
+    /** All installed font families, with a leading "" that renders as the bundled default. */
+    private fun fontFamilyItems(): List<String> {
+        val families = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment()
+            .availableFontFamilyNames.toList()
+        return listOf("") + families
+    }
+
+    private fun fontFamilyRenderer(): DefaultListCellRenderer = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?, value: Any?, index: Int,
+            isSelected: Boolean, cellHasFocus: Boolean
+        ): java.awt.Component {
+            val raw = value?.toString() ?: ""
+            val label = if (raw.isBlank()) "Default (${com.claudecode.ClaudeConstants.FONT_FAMILY})" else raw
             return super.getListCellRendererComponent(list, label, index, isSelected, cellHasFocus)
         }
     }

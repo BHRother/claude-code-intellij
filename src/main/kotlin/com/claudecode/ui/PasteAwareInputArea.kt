@@ -14,8 +14,9 @@ import javax.swing.border.EmptyBorder
 import javax.swing.text.*
 
 class PasteAwareInputArea(
-    private val font: Font,
-    private val project: com.intellij.openapi.project.Project
+    private var font: Font,
+    private val project: com.intellij.openapi.project.Project,
+    private var palette: com.claudecode.ui.theme.ChatTheme.Palette = com.claudecode.ui.theme.ChatTheme.current()
 ) : JPanel(BorderLayout()) {
 
     private val textPane: JTextPane
@@ -35,9 +36,9 @@ class PasteAwareInputArea(
         }.apply {
             this.font = this@PasteAwareInputArea.font
             border = JBUI.Borders.empty(8)
-            background = JBColor(Color(0x2B, 0x2D, 0x30), Color(0x2B, 0x2D, 0x30))
-            foreground = JBColor(Color(0xBC, 0xBE, 0xC4), Color(0xBC, 0xBE, 0xC4))
-            caretColor = JBColor(Color(0xBC, 0xBE, 0xC4), Color(0xBC, 0xBE, 0xC4))
+            background = palette.surface
+            foreground = palette.fg
+            caretColor = palette.fg
             contentType = "text/plain"
         }
 
@@ -51,6 +52,35 @@ class PasteAwareInputArea(
         }
 
         add(scrollPane, BorderLayout.CENTER)
+    }
+
+    /**
+     * Re-theme the input in place: recolor the text pane and any currently-attached
+     * chips, and switch to [newFont]. New chips created afterwards use [newPalette].
+     */
+    fun reapplyPalette(newPalette: com.claudecode.ui.theme.ChatTheme.Palette, newFont: Font) {
+        palette = newPalette
+        font = newFont
+        textPane.background = newPalette.surface
+        textPane.foreground = newPalette.fg
+        textPane.caretColor = newPalette.fg
+        textPane.font = newFont
+        // Recolor existing chip tokens (usually transient) so none stay dark-on-light.
+        for (chip in chipContentMap.keys) {
+            (chip as? JComponent)?.background = newPalette.surfaceHi
+            recolorChipChildren(chip, newPalette)
+        }
+        revalidate()
+        repaint()
+    }
+
+    private fun recolorChipChildren(c: Component, p: com.claudecode.ui.theme.ChatTheme.Palette) {
+        if (c is Container) {
+            for (child in c.components) {
+                if (child is JLabel) child.foreground = p.fgCode
+                recolorChipChildren(child, p)
+            }
+        }
     }
 
     /**
@@ -1141,9 +1171,9 @@ class PasteAwareInputArea(
             override fun getMinimumSize(): Dimension = preferredSize
         }.apply {
             isOpaque = true
-            background = JBColor(Color(0x3C, 0x3F, 0x41), Color(0x3C, 0x3F, 0x41))
+            background = palette.surfaceHi
             border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor(Color(0x50, 0x53, 0x56), Color(0x50, 0x53, 0x56)), 1, true),
+                BorderFactory.createLineBorder(palette.border, 1, true),
                 EmptyBorder(2, 6, 2, 4)
             )
             if (tooltip != null) toolTipText = tooltip
@@ -1151,13 +1181,13 @@ class PasteAwareInputArea(
 
         val labelComp = JLabel(label).apply {
             font = this@PasteAwareInputArea.font.deriveFont(11f)
-            foreground = JBColor(Color(0xA9, 0xB7, 0xC6), Color(0xA9, 0xB7, 0xC6))
+            foreground = palette.fgCode
             if (tooltip != null) toolTipText = tooltip
         }
 
         val removeBtn = JLabel("✕").apply {
             font = this@PasteAwareInputArea.font.deriveFont(10f)
-            foreground = JBColor(Color(0x80, 0x80, 0x80), Color(0x80, 0x80, 0x80))
+            foreground = palette.fgMuted
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             addMouseListener(object : java.awt.event.MouseAdapter() {
                 override fun mouseClicked(e: java.awt.event.MouseEvent?) {

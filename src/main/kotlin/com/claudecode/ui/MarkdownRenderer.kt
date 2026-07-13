@@ -2,6 +2,9 @@ package com.claudecode.ui
 
 object MarkdownRenderer {
 
+    /** Palette for the current appearance setting; resolved per call so a theme change is picked up. */
+    private val palette get() = com.claudecode.ui.theme.ChatTheme.current()
+
     private val JAVA_KEYWORDS = setOf(
         "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char",
         "class", "const", "continue", "default", "do", "double", "else", "enum",
@@ -83,11 +86,11 @@ object MarkdownRenderer {
         val hasHeader = langLabel.isNotEmpty() || copyLink.isNotEmpty() || applyLink.isNotEmpty()
         val header = if (hasHeader) {
             val sep = if (copyLink.isNotEmpty() && applyLink.isNotEmpty()) " " else ""
-            "<span style='color: #808080;'>$langLabel</span> $copyLink$sep$applyLink<br/>"
+            "<span style='color: ${palette.fgMutedHex};'>$langLabel</span> $copyLink$sep$applyLink<br/>"
         } else ""
 
-        return "<div style='background-color: #2B2D30; padding: 2px;'>" +
-                "$header<pre style='margin: 0; padding: 6px; color: #BCBEC4;'>$highlighted</pre></div>"
+        return "<div style='background-color: ${palette.surfaceHex}; padding: 2px;'>" +
+                "$header<pre style='margin: 0; padding: 6px; color: ${palette.fgHex};'>$highlighted</pre></div>"
     }
 
     fun keywordsForLanguage(lang: String): Set<String> = when {
@@ -157,32 +160,32 @@ object MarkdownRenderer {
 
         // Highlight single-line comments first (highest priority)
         result = result.replace(Regex("(//.*?)(\n|$)", RegexOption.MULTILINE)) { m ->
-            placeholder("<span style=\"color: #808080;\">${m.groupValues[1]}</span>") + m.groupValues[2]
+            placeholder("<span style=\"color: ${palette.synCommentHex};\">${m.groupValues[1]}</span>") + m.groupValues[2]
         }
 
         // Highlight strings (double and single quoted)
         result = result.replace(Regex("(&quot;)(.*?)(&quot;)")) { m ->
-            placeholder("<span style=\"color: #6A8759;\">${m.value}</span>")
+            placeholder("<span style=\"color: ${palette.synStringHex};\">${m.value}</span>")
         }
         result = result.replace(Regex("('.*?')")) { m ->
-            placeholder("<span style=\"color: #6A8759;\">${m.value}</span>")
+            placeholder("<span style=\"color: ${palette.synStringHex};\">${m.value}</span>")
         }
 
         // Highlight annotations (@Something)
         result = result.replace(Regex("@\\w+")) { m ->
-            placeholder("<span style=\"color: #BBB529;\">${m.value}</span>")
+            placeholder("<span style=\"color: ${palette.synAnnotationHex};\">${m.value}</span>")
         }
 
         // Highlight keywords (word boundary match)
         for (kw in keywords) {
             result = result.replace(Regex("\\b($kw)\\b")) { m ->
-                placeholder("<span style=\"color: #CC7832;\">${m.value}</span>")
+                placeholder("<span style=\"color: ${palette.synKeywordHex};\">${m.value}</span>")
             }
         }
 
         // Highlight numbers
         result = result.replace(Regex("\\b(\\d+\\.?\\d*)\\b")) { m ->
-            placeholder("<span style=\"color: #6897BB;\">${m.value}</span>")
+            placeholder("<span style=\"color: ${palette.synNumberHex};\">${m.value}</span>")
         }
 
         // Restore all placeholders in reverse: a later (higher-index) placeholder
@@ -211,18 +214,18 @@ object MarkdownRenderer {
         // Inline code: `code`. Linkify any URL inside so a backticked link
         // (Claude often wraps URLs in code spans) is clickable, not just text.
         result = result.replace(Regex("`([^`]+)`")) { m ->
-            "<code style='background-color: #2B2D30; padding: 1px 4px; color: #A9B7C6;'>${linkifyEscaped(m.groupValues[1])}</code>"
+            "<code style='background-color: ${palette.surfaceHex}; padding: 1px 4px; color: ${palette.fgCodeHex};'>${linkifyEscaped(m.groupValues[1])}</code>"
         }
 
         // Headers: # ## ###
         result = result.replace(Regex("^#{3}\\s+(.*)")) { m ->
-            "<b style='color: #FFC66D;'>${m.groupValues[1]}</b>"
+            "<b style='color: ${palette.mdHeaderHex};'>${m.groupValues[1]}</b>"
         }
         result = result.replace(Regex("^#{2}\\s+(.*)")) { m ->
-            "<b style='color: #FFC66D; font-size: 110%;'>${m.groupValues[1]}</b>"
+            "<b style='color: ${palette.mdHeaderHex}; font-size: 110%;'>${m.groupValues[1]}</b>"
         }
         result = result.replace(Regex("^#\\s+(.*)")) { m ->
-            "<b style='color: #FFC66D; font-size: 120%;'>${m.groupValues[1]}</b>"
+            "<b style='color: ${palette.mdHeaderHex}; font-size: 120%;'>${m.groupValues[1]}</b>"
         }
 
         // Bullet points: - item or * item
@@ -233,7 +236,7 @@ object MarkdownRenderer {
         // URLs: make http/https links clickable (but not already inside an <a> tag)
         result = result.replace(Regex("(?<![\"'>])(https?://[^\\s<\"']+)")) { m ->
             val url = m.groupValues[1]
-            "<a href='$url' style='color: #6897BB;'>$url</a>"
+            "<a href='$url' style='color: ${palette.linkHex};'>$url</a>"
         }
 
         return result
@@ -259,7 +262,7 @@ object MarkdownRenderer {
             trailing.insert(0, url.last())
             url = url.dropLast(1)
         }
-        return "<a href='$url' style='color: #6897BB;'>$url</a>" to trailing.toString()
+        return "<a href='$url' style='color: ${palette.linkHex};'>$url</a>" to trailing.toString()
     }
 
     /** Wrap every bare http(s) URL in already-escaped [text] with a clickable anchor. */

@@ -1,8 +1,6 @@
 package com.claudecode.ui
 
-import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
-import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Font
@@ -38,9 +36,18 @@ class ChipDropdown(
     private var itemsProvider: (() -> List<Pair<String, String>>)? = null
     @Volatile private var hover = false
 
+    private var palette = com.claudecode.ui.theme.ChatTheme.current()
+
+    /** Re-theme in place after an IDE-theme / Appearance change. */
+    fun reapplyPalette(newPalette: com.claudecode.ui.theme.ChatTheme.Palette) {
+        palette = newPalette
+        foreground = newPalette.fg
+        repaint()
+    }
+
     init {
         font = chipFont
-        foreground = JBColor(Color(0xBC, 0xBE, 0xC4), Color(0xBC, 0xBE, 0xC4))
+        foreground = palette.fg
         border = JBUI.Borders.empty(3, 8)
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         isOpaque = false
@@ -82,7 +89,7 @@ class ChipDropdown(
         if (hover) {
             val g2 = g.create() as Graphics2D
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.color = JBColor(Color(0x3C, 0x3F, 0x41), Color(0x3C, 0x3F, 0x41))
+            g2.color = palette.surfaceHi
             g2.fillRoundRect(0, 0, width, height, 6, 6)
             g2.dispose()
         }

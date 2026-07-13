@@ -15,7 +15,19 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
         var claudePath: String = com.claudecode.ClaudeConstants.DEFAULT_CLI_PATH,
         var model: String = "",
         var maxSessions: Int = 10,
+        // Chat transcript font size. Kept as `fontSize` for backward-compat with
+        // settings saved before the Appearance section split chat vs input.
         var fontSize: Int = 13,
+        // ── Appearance (see com.claudecode.ui.theme.ChatTheme) ──
+        // Palette source: FOLLOW_IDE (default) / DARK / LIGHT. FOLLOW_IDE tracks
+        // the IDE's light/dark theme; DARK/LIGHT pin a preset.
+        var appearanceThemeMode: String = com.claudecode.ClaudeConstants.THEME_FOLLOW_IDE,
+        // Font family overrides. Blank = the bundled default (JetBrains Mono,
+        // falling back to a platform monospace). Any installed family is allowed.
+        var chatFontFamily: String = "",
+        var inputFontFamily: String = "",
+        // Input textarea font size. 0 = inherit the chat font size (fontSize).
+        var inputFontSize: Int = 0,
         var sendSelectionContext: Boolean = true,
         var permissionMode: String = com.claudecode.ClaudeConstants.PERMISSION_MODE_ACCEPT_EDITS,
         var customModels: String = "",
@@ -68,6 +80,26 @@ class ClaudeSettings : PersistentStateComponent<ClaudeSettings.State> {
     override fun loadState(state: State) {
         myState = state
     }
+
+    /** Effective chat font family — the override, or the bundled default. */
+    fun chatFontFamily(): String =
+        myState.chatFontFamily.ifBlank { com.claudecode.ClaudeConstants.FONT_FAMILY }
+
+    /** Effective input font family — the override, or the bundled default. */
+    fun inputFontFamily(): String =
+        myState.inputFontFamily.ifBlank { com.claudecode.ClaudeConstants.FONT_FAMILY }
+
+    /** Effective input font size — its own value, or the chat size when unset (0). */
+    fun effectiveInputFontSize(): Int =
+        if (myState.inputFontSize > 0) myState.inputFontSize else myState.fontSize
+
+    /** Font for the chat transcript (Swing components + derived sizes). */
+    fun chatFont(): java.awt.Font =
+        java.awt.Font(chatFontFamily(), java.awt.Font.PLAIN, myState.fontSize)
+
+    /** Font for the input textarea. */
+    fun inputFont(): java.awt.Font =
+        java.awt.Font(inputFontFamily(), java.awt.Font.PLAIN, effectiveInputFontSize())
 
     /**
      * Truly-custom IDs the user typed or that Claude returned and we

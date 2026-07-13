@@ -50,6 +50,56 @@ class ClaudeSettingsStateTest {
             val state = ClaudeSettings.State()
             assertEquals("", state.customModels)
         }
+
+        @Test
+        fun `appearance theme defaults to follow IDE`() {
+            val state = ClaudeSettings.State()
+            assertEquals(ClaudeConstants.THEME_FOLLOW_IDE, state.appearanceThemeMode)
+        }
+
+        @Test
+        fun `chat and input font families default to blank (bundled default)`() {
+            val state = ClaudeSettings.State()
+            assertEquals("", state.chatFontFamily)
+            assertEquals("", state.inputFontFamily)
+        }
+
+        @Test
+        fun `input font size defaults to 0 (inherit chat size)`() {
+            val state = ClaudeSettings.State()
+            assertEquals(0, state.inputFontSize)
+        }
+    }
+
+    @Nested
+    inner class FontResolution {
+        @Test
+        fun `chat family falls back to bundled default when blank`() {
+            val settings = ClaudeSettings()
+            settings.loadState(ClaudeSettings.State(chatFontFamily = ""))
+            assertEquals(ClaudeConstants.FONT_FAMILY, settings.chatFontFamily())
+        }
+
+        @Test
+        fun `chat family honors an override`() {
+            val settings = ClaudeSettings()
+            settings.loadState(ClaudeSettings.State(chatFontFamily = "Fira Code"))
+            assertEquals("Fira Code", settings.chatFontFamily())
+        }
+
+        @Test
+        fun `input size inherits chat size when unset`() {
+            val settings = ClaudeSettings()
+            settings.loadState(ClaudeSettings.State(fontSize = 17, inputFontSize = 0))
+            assertEquals(17, settings.effectiveInputFontSize())
+        }
+
+        @Test
+        fun `input size uses its own value when set`() {
+            val settings = ClaudeSettings()
+            settings.loadState(ClaudeSettings.State(fontSize = 17, inputFontSize = 11))
+            assertEquals(11, settings.effectiveInputFontSize())
+        }
     }
 
     @Nested

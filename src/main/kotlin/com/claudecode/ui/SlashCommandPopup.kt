@@ -1,11 +1,9 @@
 package com.claudecode.ui
 
-import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
-import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.event.MouseAdapter
@@ -39,6 +37,8 @@ class SlashCommandPopup(
     private val onSelect: (String) -> Unit,
 ) {
 
+    private val palette = com.claudecode.ui.theme.ChatTheme.current()
+
     data class Item(val command: String, val description: String)
 
     private val items = listOf(
@@ -58,7 +58,7 @@ class SlashCommandPopup(
         cellRenderer = ItemRenderer()
         selectionMode = ListSelectionModel.SINGLE_SELECTION
         selectedIndex = 0
-        background = JBColor(Color(0x2B, 0x2D, 0x30), Color(0x2B, 0x2D, 0x30))
+        background = palette.surface
         border = JBUI.Borders.empty()
         visibleRowCount = items.size
     }
@@ -66,7 +66,7 @@ class SlashCommandPopup(
     private val popup: JPopupMenu = JPopupMenu().apply {
         layout = BorderLayout()
         isFocusable = false
-        border = JBUI.Borders.customLine(JBColor(Color(0x3C, 0x3F, 0x41), Color(0x3C, 0x3F, 0x41)), 1)
+        border = JBUI.Borders.customLine(palette.surfaceHi, 1)
         add(
             JBScrollPane(list).apply {
                 border = JBUI.Borders.empty()
@@ -114,15 +114,15 @@ class SlashCommandPopup(
     }
 
     /** HTML-rendered row so the command and the description can be styled differently. */
-    private class ItemRenderer : DefaultListCellRenderer() {
+    private inner class ItemRenderer : DefaultListCellRenderer() {
         override fun getListCellRendererComponent(
             list: JList<*>?, value: Any?, index: Int,
             isSelected: Boolean, cellHasFocus: Boolean,
         ): Component {
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
             val item = value as? Item ?: return this
-            val cmdColor = if (isSelected) "#FFFFFF" else "#6897BB"
-            val descColor = if (isSelected) "#E0E0E0" else "#808080"
+            val cmdColor = if (isSelected) "#FFFFFF" else palette.linkHex
+            val descColor = if (isSelected) "#E0E0E0" else palette.fgMutedHex
             text = "<html><span style='color: $cmdColor;'>" +
                 "<code>${item.command}</code></span>" +
                 "&nbsp;&nbsp;<span style='color: $descColor;'>${item.description}</span></html>"

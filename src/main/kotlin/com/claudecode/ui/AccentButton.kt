@@ -26,13 +26,21 @@ class AccentButton(text: String) : JButton(text) {
     private var variant: Variant = Variant.ACCENT
     private var hover = false
     private var pressed = false
+    private var palette = com.claudecode.ui.theme.ChatTheme.current()
+
+    /** Re-theme in place after an IDE-theme / Appearance change. */
+    fun reapplyPalette(newPalette: com.claudecode.ui.theme.ChatTheme.Palette) {
+        palette = newPalette
+        foreground = newPalette.accentText
+        repaint()
+    }
 
     init {
         isBorderPainted = false
         isContentAreaFilled = false
         isFocusPainted = false
         isOpaque = false
-        foreground = Color.WHITE
+        foreground = palette.accentText
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         margin = JBUI.emptyInsets()
         border = JBUI.Borders.empty(2, 12)
@@ -64,9 +72,9 @@ class AccentButton(text: String) : JButton(text) {
 
     private fun currentFill(): Color {
         val base = when (variant) {
-            Variant.ACCENT -> Color(0xD9, 0x77, 0x57)   // Claude orange
-            Variant.DANGER -> Color(0xC7, 0x47, 0x47)
-            Variant.NEUTRAL -> Color(0x4B, 0x4E, 0x52)
+            Variant.ACCENT -> palette.accent     // Claude orange
+            Variant.DANGER -> palette.danger
+            Variant.NEUTRAL -> palette.neutralButton
         }
         return when {
             pressed -> base.darker()

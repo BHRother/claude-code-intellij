@@ -40,6 +40,7 @@ class ClaudeToolWindowManager(
     init {
         sessionManager.addListener(this)
         setupToolbar()
+        subscribeToAppearanceChanges()
 
         project.messageBus.connect(this).subscribe(
             ToolWindowManagerListener.TOPIC,
@@ -75,6 +76,44 @@ class ClaudeToolWindowManager(
         })
 
         showWelcome()
+    }
+
+    /**
+     * Live theme reload. Subscribes (app-level, disposed with this tool window) to:
+     *  - IDE Look-and-Feel changes and editor-color-scheme changes → re-theme only
+     *    when the plugin is in "Follow IDE" mode (Dark/Light presets are pinned).
+     *  - the plugin's own Appearance settings change → always re-theme.
+     */
+    private fun subscribeToAppearanceChanges() {
+        val conn = com.intellij.openapi.application.ApplicationManager.getApplication()
+            .messageBus.connect(this)
+        conn.subscribe(
+            com.intellij.ide.ui.LafManagerListener.TOPIC,
+            com.intellij.ide.ui.LafManagerListener { reapplyThemeToAll(onlyWhenFollowingIde = true) }
+        )
+        conn.subscribe(
+            com.intellij.openapi.editor.colors.EditorColorsManager.TOPIC,
+            com.intellij.openapi.editor.colors.EditorColorsListener { reapplyThemeToAll(onlyWhenFollowingIde = true) }
+        )
+        conn.subscribe(
+            com.claudecode.settings.ClaudeAppearanceListener.TOPIC,
+            object : com.claudecode.settings.ClaudeAppearanceListener {
+                override fun appearanceChanged() = reapplyThemeToAll(onlyWhenFollowingIde = false)
+            }
+        )
+    }
+
+    private fun reapplyThemeToAll(onlyWhenFollowingIde: Boolean) {
+        if (onlyWhenFollowingIde &&
+            com.claudecode.settings.ClaudeSettings.getInstance().state.appearanceThemeMode !=
+            com.claudecode.ClaudeConstants.THEME_FOLLOW_IDE
+        ) return
+        // LAF listeners can fire before the new UI defaults are fully installed;
+        // defer so palette derivation reads the post-switch colors.
+        SwingUtilities.invokeLater {
+            sessionPanels.values.forEach { runCatching { it.reapplyTheme() } }
+            (welcomeContent?.component as? WelcomePanel)?.let { runCatching { it.reapplyTheme() } }
+        }
     }
 
     private fun showWelcome() {

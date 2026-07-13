@@ -14,6 +14,30 @@ object ClaudeConstants {
     const val FONT_FAMILY = "JetBrains Mono"
     const val ENV_TERM_VALUE = "dumb"
 
+    // ───────── Appearance / theme ─────────
+    // How the chat UI derives its color palette. FOLLOW_IDE tracks the active
+    // IDE theme (light vs dark) and blends in the real editor/panel colors;
+    // DARK/LIGHT pin one of two hand-tuned presets regardless of the IDE.
+    // See com.claudecode.ui.theme.ChatTheme.
+    const val THEME_FOLLOW_IDE = "FOLLOW_IDE"
+    const val THEME_DARK = "DARK"
+    const val THEME_LIGHT = "LIGHT"
+    val THEME_MODES = listOf(THEME_FOLLOW_IDE, THEME_DARK, THEME_LIGHT)
+
+    fun shortThemeModeLabel(mode: String): String = when (mode) {
+        THEME_FOLLOW_IDE -> "Follow IDE theme"
+        THEME_DARK -> "Dark"
+        THEME_LIGHT -> "Light"
+        else -> mode
+    }
+
+    fun describeThemeMode(mode: String): String = when (mode) {
+        THEME_FOLLOW_IDE -> "Match the IDE's active theme (light or dark) and blend in its editor colors"
+        THEME_DARK -> "Always use the dark palette (the plugin's original look)"
+        THEME_LIGHT -> "Always use the light palette"
+        else -> mode
+    }
+
     val AVAILABLE_MODELS = listOf("", MODEL_OPUS_47, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU, MODEL_SONNET_PREV)
 
     // ───────── Remote model catalog ─────────

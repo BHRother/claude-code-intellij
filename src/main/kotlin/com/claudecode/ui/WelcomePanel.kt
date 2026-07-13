@@ -2,49 +2,70 @@ package com.claudecode.ui
 
 import com.claudecode.settings.ClaudeSettings
 import com.intellij.openapi.options.ShowSettingsUtil
-import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
 import java.awt.*
 import javax.swing.*
 import javax.swing.event.HyperlinkEvent
-import javax.swing.text.html.HTMLEditorKit
 
 class WelcomePanel(
     private val onNewSession: () -> Unit
 ) : JPanel(BorderLayout()) {
 
-    init {
-        val settings = ClaudeSettings.getInstance().state
-        val monoFont = Font(com.claudecode.ClaudeConstants.FONT_FAMILY, Font.PLAIN, settings.fontSize)
-        background = JBColor(Color(0x1E, 0x1F, 0x22), Color(0x1E, 0x1F, 0x22))
+    private var palette = com.claudecode.ui.theme.ChatTheme.current()
+    private val content: JTextPane
 
-        val content = JTextPane().apply {
+    /** Stylesheet rules for the welcome pane, as a function of palette + font. */
+    private fun welcomeCss(p: com.claudecode.ui.theme.ChatTheme.Palette, family: String, fontSizePx: Int): String = """
+        body {
+            font-family: '$family', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+            font-size: ${fontSizePx}px;
+            color: ${p.fgHex};
+            background-color: ${p.bgHex};
+            padding: 20px;
+        }
+        h1 { color: ${p.accentHex}; font-size: 18px; margin-bottom: 12px; }
+        h2 { color: ${p.goldHex}; font-size: 14px; margin-top: 16px; margin-bottom: 6px; }
+        .section { margin-bottom: 14px; }
+        .shortcut { color: ${p.linkHex}; }
+        .dim { color: ${p.fgMutedHex}; }
+        ul { margin-top: 4px; margin-bottom: 4px; }
+        li { margin-bottom: 3px; }
+        code {
+            background-color: ${p.surfaceHex};
+            padding: 1px 4px;
+            color: ${p.fgCodeHex};
+        }
+    """.trimIndent()
+
+    /** Re-theme the welcome pane in place after an IDE-theme / Appearance change. */
+    fun reapplyTheme() {
+        val settings = ClaudeSettings.getInstance()
+        palette = com.claudecode.ui.theme.ChatTheme.current()
+        val family = settings.chatFontFamily().replace("'", "")
+        background = palette.bg
+        content.background = palette.bg
+        // Fresh kit → fresh stylesheet (see ChatHtmlKit); appending would keep the
+        // old code/background rules and win the cascade.
+        content.editorKit = com.claudecode.ui.theme.ChatHtmlKit.create(
+            welcomeCss(palette, family, settings.state.fontSize)
+        )
+        content.text = buildWelcomeHtml()
+        revalidate()
+        repaint()
+    }
+
+    init {
+        val settings = ClaudeSettings.getInstance()
+        val state = settings.state
+        val monoFont = settings.chatFont()
+        val family = settings.chatFontFamily().replace("'", "")
+        background = palette.bg
+
+        content = JTextPane().apply {
             isEditable = false
             contentType = "text/html"
-            background = JBColor(Color(0x1E, 0x1F, 0x22), Color(0x1E, 0x1F, 0x22))
-            val kit = HTMLEditorKit()
-            kit.styleSheet.addRule("""
-                body {
-                    font-family: 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-                    font-size: ${settings.fontSize}px;
-                    color: #BCBEC4;
-                    background-color: #1E1F22;
-                    padding: 20px;
-                }
-                h1 { color: #D97757; font-size: 18px; margin-bottom: 12px; }
-                h2 { color: #FFC66D; font-size: 14px; margin-top: 16px; margin-bottom: 6px; }
-                .section { margin-bottom: 14px; }
-                .shortcut { color: #6897BB; }
-                .dim { color: #808080; }
-                ul { margin-top: 4px; margin-bottom: 4px; }
-                li { margin-bottom: 3px; }
-                code {
-                    background-color: #2B2D30;
-                    padding: 1px 4px;
-                    color: #A9B7C6;
-                }
-            """.trimIndent())
-            editorKit = kit
+            background = palette.bg
+            editorKit = com.claudecode.ui.theme.ChatHtmlKit.create(welcomeCss(palette, family, state.fontSize))
             text = buildWelcomeHtml()
             addHyperlinkListener { e ->
                 if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) {

@@ -90,6 +90,12 @@
     ]]></description>
 
     <change-notes><![CDATA[
+    <h3>1.3.0</h3>
+    <ul>
+        <li><b>Appearance settings — themes &amp; fonts</b> — a new <b>Appearance</b> section (Settings → Tools → Claude Code) lets you pick how the chat is colored: <b>Follow IDE theme</b> (default) matches the IDE's light/dark theme and blends in its editor colors, so a light IDE no longer shows a dark "terminal" chat; <b>Dark</b> and <b>Light</b> pin one palette regardless of the IDE (Dark is the original look). You can also set separate <b>font family and size</b> for the chat transcript and the input box.</li>
+        <li><b>Live theme reload</b> — switching the IDE theme (in Follow-IDE mode) or changing the Appearance settings re-themes open chats and the welcome screen <i>in place</i>, no need to reopen them.</li>
+    </ul>
+
     <h3>1.2.2</h3>
     <ul>
         <li><b>Account sign-in: <code>/login</code></b> — sign in to (or out of) your Anthropic account right from the chat. <code>/login</code> opens a dialog showing your current account, lets you choose <i>subscription</i> or <i>Console (API billing)</i>, opens the browser for OAuth, and takes the authorization code you paste back. Built on <code>claude auth</code>, so it works on macOS, Linux, and Windows.</li>

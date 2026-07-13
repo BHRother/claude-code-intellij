@@ -1,13 +1,11 @@
 package com.claudecode.ui
 
-import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
-import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.event.MouseAdapter
@@ -40,21 +38,35 @@ data class Choice(
  */
 class ChoiceBar : JPanel(BorderLayout()) {
 
+    private var palette = com.claudecode.ui.theme.ChatTheme.current()
+
+    /** Re-theme in place after an IDE-theme / Appearance change. */
+    fun reapplyPalette(newPalette: com.claudecode.ui.theme.ChatTheme.Palette) {
+        palette = newPalette
+        titleLabel.foreground = newPalette.link
+        hintLabel.foreground = newPalette.fgMuted
+        list.background = newPalette.surface
+        background = newPalette.surface
+        border = JBUI.Borders.customLine(newPalette.surfaceHi, 1)
+        revalidate()
+        repaint()
+    }
+
     private val titleLabel = JBLabel().apply {
         border = JBUI.Borders.empty(6, 10, 2, 10)
-        foreground = JBColor(Color(0x68, 0x97, 0xBB), Color(0x68, 0x97, 0xBB))
+        foreground = palette.link
     }
     private val hintLabel = JBLabel().apply {
         border = JBUI.Borders.empty(2, 10, 6, 10)
         componentStyle = UIUtil.ComponentStyle.SMALL
-        foreground = JBColor(Color(0x80, 0x80, 0x80), Color(0x80, 0x80, 0x80))
+        foreground = palette.fgMuted
     }
     private val model = DefaultListModel<Choice>()
     private val list = JBList(model).apply {
         cellRenderer = RowRenderer()
         selectionMode = ListSelectionModel.SINGLE_SELECTION
         isFocusable = false // input keeps focus; the host drives selection
-        background = JBColor(Color(0x2B, 0x2D, 0x30), Color(0x2B, 0x2D, 0x30))
+        background = palette.surface
         border = JBUI.Borders.empty()
     }
 
@@ -66,8 +78,8 @@ class ChoiceBar : JPanel(BorderLayout()) {
     init {
         isVisible = false
         isOpaque = true
-        background = JBColor(Color(0x2B, 0x2D, 0x30), Color(0x2B, 0x2D, 0x30))
-        border = JBUI.Borders.customLine(JBColor(Color(0x3C, 0x3F, 0x41), Color(0x3C, 0x3F, 0x41)), 1)
+        background = palette.surface
+        border = JBUI.Borders.customLine(palette.surfaceHi, 1)
         add(titleLabel, BorderLayout.NORTH)
         add(
             JBScrollPane(list).apply {
@@ -164,8 +176,10 @@ class ChoiceBar : JPanel(BorderLayout()) {
         ): Component {
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
             val row = value as? Choice ?: return this
-            val labelColor = if (isSelected) "#FFFFFF" else "#A9B7C6"
-            val descColor = if (isSelected) "#E0E0E0" else "#808080"
+            // On selection the row background is the IDE's saturated selection
+            // color, so keep near-white text; otherwise track the palette.
+            val labelColor = if (isSelected) "#FFFFFF" else palette.fgCodeHex
+            val descColor = if (isSelected) "#E0E0E0" else palette.fgMutedHex
             val mark = when {
                 row.isCustom -> "✎ "
                 multiSelect -> if (checked.contains(index)) "☑ " else "☐ "

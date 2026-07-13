@@ -1,8 +1,6 @@
 package com.claudecode.ui
 
-import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
-import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Graphics
@@ -20,6 +18,7 @@ import javax.swing.JButton
 class IconChipButton(icon: Icon, tooltip: String? = null) : JButton(icon) {
 
     private var hover = false
+    private val palette = com.claudecode.ui.theme.ChatTheme.current()
 
     init {
         isBorderPainted = false
@@ -42,7 +41,7 @@ class IconChipButton(icon: Icon, tooltip: String? = null) : JButton(icon) {
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = JBColor(Color(0x3C, 0x3F, 0x41), Color(0x3C, 0x3F, 0x41))
+                g2.color = palette.surfaceHi
                 g2.fillRoundRect(0, 0, width, height, 6, 6)
             } finally {
                 g2.dispose()

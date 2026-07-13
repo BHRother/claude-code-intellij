@@ -7,7 +7,6 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import java.awt.*
@@ -115,69 +114,87 @@ class SessionPanel(
     private var lastEditDiffPairs: MutableList<Pair<String, String>> = mutableListOf()
     private var lastEditDisplayText: String? = null
 
+    /**
+     * The resolved color palette for this panel. Every Swing color and inline-HTML
+     * hex the chat renders comes from here so light/dark stay consistent. Re-resolved
+     * by [reapplyTheme] when the IDE theme or the plugin's Appearance settings change.
+     * See [com.claudecode.ui.theme.ChatTheme].
+     */
+    private var palette = com.claudecode.ui.theme.ChatTheme.current()
+
+    /** Bottom-row keyboard hint; held so [reapplyTheme] can recolor it. */
+    private lateinit var hintLabel: JLabel
+
+    /** CSS font-family stack for the chat: the chosen family first, then monospace fallbacks. */
+    private fun cssFontFamily(family: String): String =
+        "'${family.replace("'", "")}', 'JetBrains Mono', 'Menlo', 'Consolas', monospace"
+
+    /** The chat transcript's stylesheet rules for a given palette + font. Used at build and on re-theme. */
+    private fun chatCss(p: com.claudecode.ui.theme.ChatTheme.Palette, fontFamilyCss: String, fontSizePx: Int): String = """
+        body {
+            font-family: $fontFamilyCss;
+            font-size: ${fontSizePx}px;
+            padding: 8px;
+            color: ${p.fgHex};
+            background-color: ${p.bgHex};
+        }
+        .user-msg {
+            color: ${p.linkHex};
+            margin-top: 12px;
+            margin-bottom: 4px;
+            padding: 6px;
+            background-color: ${p.surfaceHex};
+        }
+        .claude-msg {
+            color: ${p.fgHex};
+            margin-top: 4px;
+            margin-bottom: 4px;
+        }
+        .tool-msg {
+            color: ${p.accentHex};
+            font-style: italic;
+            margin-top: 2px;
+            margin-bottom: 2px;
+        }
+        .error-msg {
+            color: ${p.errorHex};
+            margin-top: 4px;
+            margin-bottom: 4px;
+        }
+        .system-msg {
+            color: ${p.fgMutedHex};
+            font-style: italic;
+            margin-top: 4px;
+            margin-bottom: 4px;
+        }
+        pre {
+            background-color: ${p.surfaceHex};
+            padding: 8px;
+        }
+        code {
+            font-family: $fontFamilyCss;
+            background-color: ${p.surfaceHex};
+            padding: 1px 4px;
+        }
+        a {
+            color: ${p.linkHex};
+            text-decoration: underline;
+        }
+    """.trimIndent()
+
     init {
-        val settings = ClaudeSettings.getInstance().state
-        val monoFont = Font(com.claudecode.ClaudeConstants.FONT_FAMILY, Font.PLAIN, settings.fontSize)
+        val settings = ClaudeSettings.getInstance()
+        val state = settings.state
+        val monoFont = settings.chatFont()
+        val inputFont = settings.inputFont()
         val smallFont = monoFont.deriveFont(11f)
+        val fontFamilyCss = cssFontFamily(settings.chatFontFamily())
 
         outputPane = JTextPane().apply {
             isEditable = false
             contentType = "text/html"
-            background = JBColor(Color(0x1E, 0x1F, 0x22), Color(0x1E, 0x1F, 0x22))
-            val kit = HTMLEditorKit()
-            val styleSheet = kit.styleSheet
-            styleSheet.addRule("""
-                body {
-                    font-family: 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-                    font-size: ${settings.fontSize}px;
-                    padding: 8px;
-                    color: #BCBEC4;
-                    background-color: #1E1F22;
-                }
-                .user-msg {
-                    color: #6897BB;
-                    margin-top: 12px;
-                    margin-bottom: 4px;
-                    padding: 6px;
-                    background-color: #2B2D30;
-                }
-                .claude-msg {
-                    color: #BCBEC4;
-                    margin-top: 4px;
-                    margin-bottom: 4px;
-                }
-                .tool-msg {
-                    color: #D97757;
-                    font-style: italic;
-                    margin-top: 2px;
-                    margin-bottom: 2px;
-                }
-                .error-msg {
-                    color: #FF6B68;
-                    margin-top: 4px;
-                    margin-bottom: 4px;
-                }
-                .system-msg {
-                    color: #808080;
-                    font-style: italic;
-                    margin-top: 4px;
-                    margin-bottom: 4px;
-                }
-                pre {
-                    background-color: #2B2D30;
-                    padding: 8px;
-                }
-                code {
-                    font-family: 'JetBrains Mono', 'Menlo', monospace;
-                    background-color: #2B2D30;
-                    padding: 1px 4px;
-                }
-                a {
-                    color: #6897BB;
-                    text-decoration: underline;
-                }
-            """.trimIndent())
-            editorKit = kit
+            background = palette.bg
+            editorKit = com.claudecode.ui.theme.ChatHtmlKit.create(chatCss(palette, fontFamilyCss, state.fontSize))
             // Don't drag the viewport with the caret — appendHtml decides
             // whether to auto-scroll based on the user's current position.
             (caret as? DefaultCaret)?.updatePolicy = DefaultCaret.NEVER_UPDATE
@@ -246,10 +263,10 @@ class SessionPanel(
             isVisible = false
             isOpaque = true
             margin = JBUI.emptyInsets()
-            background = JBColor(Color(0x3C, 0x3F, 0x41), Color(0x3C, 0x3F, 0x41))
-            foreground = JBColor(Color(0xBC, 0xBE, 0xC4), Color(0xBC, 0xBE, 0xC4))
+            background = palette.surfaceHi
+            foreground = palette.fg
             border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor(Color(0x50, 0x53, 0x56), Color(0x50, 0x53, 0x56)), 1, true),
+                BorderFactory.createLineBorder(palette.border, 1, true),
                 JBUI.Borders.empty(4, 10)
             )
             addActionListener { scrollOutputToBottom() }
@@ -286,12 +303,12 @@ class SessionPanel(
 
         thinkingLabel = JLabel("").apply {
             font = monoFont.deriveFont(Font.ITALIC, 11f)
-            foreground = JBColor(Color(0xD9, 0x77, 0x57), Color(0xD9, 0x77, 0x57))
+            foreground = palette.accent
             border = JBUI.Borders.empty(4, 8)
             isVisible = false
         }
 
-        inputArea = PasteAwareInputArea(monoFont, project)
+        inputArea = PasteAwareInputArea(inputFont, project, palette)
 
         // Key bindings via InputMap/ActionMap (works reliably on macOS)
         val inputMap = inputArea.getTextInputMap(JComponent.WHEN_FOCUSED)
@@ -337,7 +354,7 @@ class SessionPanel(
             }
         })
 
-        inputArea.border = JBUI.Borders.customLine(JBColor(0x3C3F41, 0x3C3F41), 1, 0, 0, 0)
+        inputArea.border = JBUI.Borders.customLine(palette.surfaceHi, 1, 0, 0, 0)
         // Cursor-style auto-grow: starts at 3 lines, expands per line up to
         // 10, then scrolls. Reset to 3 happens automatically on clear() because
         // the document listener fires on text removal too.
@@ -368,12 +385,12 @@ class SessionPanel(
 
         statusLabel = JLabel("Ready").apply {
             border = JBUI.Borders.empty(2, 8)
-            foreground = JBColor(0x808080, 0x808080)
+            foreground = palette.fgMuted
             font = smallFont
         }
 
-        val hintLabel = JLabel("Enter to send · Shift+Enter for newline · Esc to stop").apply {
-            foreground = JBColor(0x606060, 0x606060)
+        hintLabel = JLabel("Enter to send · Shift+Enter for newline · Esc to stop").apply {
+            foreground = palette.fgFaint
             font = monoFont.deriveFont(10f)
             border = JBUI.Borders.empty(2, 8)
         }
@@ -382,14 +399,14 @@ class SessionPanel(
         debugArea = JTextArea(5, 40).apply {
             isEditable = false
             font = monoFont.deriveFont(10f)
-            background = JBColor(Color(0x15, 0x15, 0x18), Color(0x15, 0x15, 0x18))
-            foreground = JBColor(Color(0x70, 0x70, 0x70), Color(0x70, 0x70, 0x70))
+            background = palette.debugBg
+            foreground = palette.fgFaint
             lineWrap = true
             wrapStyleWord = true
         }
 
         val debugScrollPane = JBScrollPane(debugArea).apply {
-            border = JBUI.Borders.customLine(JBColor(0x3C3F41, 0x3C3F41), 1, 0, 0, 0)
+            border = JBUI.Borders.customLine(palette.surfaceHi, 1, 0, 0, 0)
             preferredSize = Dimension(0, 120)
         }
         // The live in-chat debug log now has its own Export / Clear right here,
@@ -407,7 +424,7 @@ class SessionPanel(
 
         debugToggle = JCheckBox("Debug").apply {
             font = monoFont.deriveFont(10f)
-            foreground = JBColor(0x606060, 0x606060)
+            foreground = palette.fgFaint
             isOpaque = false
             isSelected = false
             toolTipText = "Show the live debug log for this chat (with Export)"
@@ -427,7 +444,7 @@ class SessionPanel(
         // keyboard hint on the right.
         contextLabel = JLabel("").apply {
             font = smallFont
-            foreground = JBColor(0x808080, 0x808080)
+            foreground = palette.fgMuted
             border = JBUI.Borders.empty(0, 12)
         }
         val statusHintPanel = JPanel(BorderLayout()).apply {
@@ -464,6 +481,80 @@ class SessionPanel(
         } else {
             appendHtml("<div class='system-msg'>Claude Code session started. Working directory: ${escapeHtml(session.workingDirectory)}</div>")
         }
+    }
+
+    /**
+     * Re-theme this panel in place after an IDE-theme change or a plugin
+     * Appearance settings change — no need to reopen the chat. Re-resolves the
+     * palette and fonts, recolors every Swing widget and the chat stylesheet, and
+     * remaps the already-rendered transcript's colors to the new palette.
+     * Must run on the EDT.
+     */
+    fun reapplyTheme() {
+        val settings = ClaudeSettings.getInstance()
+        val oldPalette = palette
+        val newPalette = com.claudecode.ui.theme.ChatTheme.current()
+        palette = newPalette
+
+        val monoFont = settings.chatFont()
+        val inputFont = settings.inputFont()
+        val smallFont = monoFont.deriveFont(11f)
+        val fontFamilyCss = cssFontFamily(settings.chatFontFamily())
+
+        // Transcript: install a FRESH editor kit (fresh stylesheet with only the
+        // new rules — appending would leave stale code/pre backgrounds behind),
+        // recolor the already-emitted HTML, and re-set it. Preserve scroll pin.
+        val wasAtBottom = isOutputAtBottom()
+        val remapped = com.claudecode.ui.theme.ChatTheme.remap(outputPane.text ?: "", oldPalette, newPalette)
+        outputPane.editorKit = com.claudecode.ui.theme.ChatHtmlKit.create(
+            chatCss(newPalette, fontFamilyCss, settings.state.fontSize)
+        )
+        // Swapping the kit rebuilds the caret; re-assert the no-auto-scroll policy.
+        (outputPane.caret as? DefaultCaret)?.updatePolicy = DefaultCaret.NEVER_UPDATE
+        outputPane.background = newPalette.bg
+        outputPane.text = remapped
+
+        // Chrome
+        jumpToBottomButton.apply {
+            background = newPalette.surfaceHi
+            foreground = newPalette.fg
+            font = monoFont.deriveFont(11f)
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(newPalette.border, 1, true),
+                JBUI.Borders.empty(4, 10)
+            )
+        }
+        thinkingLabel.foreground = newPalette.accent
+        thinkingLabel.font = monoFont.deriveFont(Font.ITALIC, 11f)
+        // statusLabel color tracks the busy state (accent while working).
+        statusLabel.foreground = if (session.isBusy) newPalette.accent else newPalette.fgMuted
+        statusLabel.font = smallFont
+        contextLabel.foreground = newPalette.fgMuted
+        contextLabel.font = smallFont
+        hintLabel.foreground = newPalette.fgFaint
+        hintLabel.font = monoFont.deriveFont(10f)
+        debugArea.background = newPalette.debugBg
+        debugArea.foreground = newPalette.fgFaint
+        debugArea.font = monoFont.deriveFont(10f)
+        debugToggle.foreground = newPalette.fgFaint
+        debugToggle.font = monoFont.deriveFont(10f)
+        queueHeader.foreground = newPalette.fgMuted
+
+        sendStopButton.reapplyPalette(newPalette)
+        sendStopButton.font = smallFont
+        modelChip.reapplyPalette(newPalette)
+        permissionChip.reapplyPalette(newPalette)
+        choiceBar.reapplyPalette(newPalette)
+
+        inputArea.reapplyPalette(newPalette, inputFont)
+        inputArea.border = JBUI.Borders.customLine(newPalette.surfaceHi, 1, 0, 0, 0)
+
+        // Rebuild queued-message rows so their labels pick up the new palette.
+        refreshQueuePanel()
+
+        revalidate()
+        repaint()
+        if (wasAtBottom) SwingUtilities.invokeLater { scrollOutputToBottom() }
     }
 
     private fun onSendStopClick() {
@@ -503,7 +594,7 @@ class SessionPanel(
         if (isBtwCommand(trimmed)) {
             val payload = trimmed.substring(4).trim()
             if (payload.isEmpty()) {
-                appendHtml("<div class='system-msg' style='color:#808080;'>Usage: <code>/btw &lt;message&gt;</code> " +
+                appendHtml("<div class='system-msg' style='color:${palette.fgMutedHex};'>Usage: <code>/btw &lt;message&gt;</code> " +
                     "— queues a message to send after the current turn.</div>")
                 inputArea.clear()
                 return
@@ -520,7 +611,7 @@ class SessionPanel(
         // can't be queued — they run once the turn ends.
         if (session.isBusy) {
             if (looksLikeSlashCommand(trimmed)) {
-                appendHtml("<div class='system-msg' style='color:#808080;'>Commands run when the current turn " +
+                appendHtml("<div class='system-msg' style='color:${palette.fgMutedHex};'>Commands run when the current turn " +
                     "finishes. Use <code>/btw &lt;message&gt;</code> to queue a message for Claude.</div>")
                 return
             }
@@ -594,7 +685,7 @@ class SessionPanel(
     private fun buildQueuePanel(smallFont: java.awt.Font) {
         queueHeader = JLabel().apply {
             font = smallFont
-            foreground = JBColor(0x9AA0A6, 0x9AA0A6)
+            foreground = palette.fgMuted
         }
         queueListPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -623,7 +714,7 @@ class SessionPanel(
         val shown = if (oneLine.length > 90) oneLine.take(90) + "…" else oneLine
         val label = JLabel("• $shown").apply {
             font = queueHeader.font
-            foreground = JBColor(0xC0C0C0, 0xC0C0C0)
+            foreground = palette.fg
             toolTipText = oneLine
         }
         val remove = JButton("✕").apply {
@@ -720,7 +811,7 @@ class SessionPanel(
     private fun runMcpCommand() {
         appendUserMessage("/mcp")
         val loadingId = "mcp-list-${copyCommandCounter++}"
-        appendHtml("<div id='$loadingId' class='system-msg' style='color:#808080;'>Checking MCP servers…</div>")
+        appendHtml("<div id='$loadingId' class='system-msg' style='color:${palette.fgMutedHex};'>Checking MCP servers…</div>")
         scrollOutputToBottom()
         val basePath = project.basePath
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -746,7 +837,7 @@ class SessionPanel(
         for (s in servers) {
             val st = status[s.name]?.label ?: "—"
             sb.append("<div style='margin-top:2px;'>• <b>${escapeHtml(s.name)}</b> ")
-            sb.append("<span style='color:#808080;'>${escapeHtml(s.scope.badge)} · ${escapeHtml(s.transport.cliValue)} · ")
+            sb.append("<span style='color:${palette.fgMutedHex};'>${escapeHtml(s.scope.badge)} · ${escapeHtml(s.transport.cliValue)} · ")
             sb.append("${escapeHtml(s.summary().take(80))}</span> · ${escapeHtml(st)}</div>")
         }
         sb.append("</div>")
@@ -784,7 +875,7 @@ class SessionPanel(
     private fun runHelpCommand() {
         appendUserMessage("/help")
         appendHtml(
-            "<div class='system-msg' style='color: #BCBEC4;'>" +
+            "<div class='system-msg' style='color: ${palette.fgHex};'>" +
                 "<b>Supported slash commands:</b><br/>" +
                 "• <code>/clear</code> — drop current conversation and start fresh<br/>" +
                 "• <code>/help</code> — this list<br/>" +
@@ -810,10 +901,10 @@ class SessionPanel(
         val firstToken = trimmed.substringBefore(' ').take(40)
         appendHtml(
             "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
-                "<span style='color: #D9B263;'>⚠ <code>${escapeHtml(firstToken)}</code> " +
+                "border-left: 3px solid ${palette.goldHex}; background-color: ${palette.surfaceHex};'>" +
+                "<span style='color: ${palette.goldHex};'>⚠ <code>${escapeHtml(firstToken)}</code> " +
                 "isn't a supported slash command.</span><br/>" +
-                "<span style='color: #BCBEC4;'>Currently supported: " +
+                "<span style='color: ${palette.fgHex};'>Currently supported: " +
                 "<code>/clear</code>, <code>/help</code>, <code>/cost</code>, " +
                 "<code>/model</code>, <code>/settings</code>. " +
                 "Other slash commands aren't sent to Claude — its <code>-p</code> mode " +
@@ -931,12 +1022,12 @@ class SessionPanel(
         if (totalCostUsd > 0) {
             sb.append("Total cost for this session: <b>$").append(String.format("%.4f", totalCostUsd)).append("</b>")
             if (lastTurnCostUsd > 0) {
-                sb.append(" <span style='color: #808080;'>(last turn: $")
+                sb.append(" <span style='color: ${palette.fgMutedHex};'>(last turn: $")
                 sb.append(String.format("%.4f", lastTurnCostUsd))
                 sb.append(")</span>")
             }
         } else {
-            sb.append("<span style='color: #808080;'>No cost recorded yet — send a message first.</span>")
+            sb.append("<span style='color: ${palette.fgMutedHex};'>No cost recorded yet — send a message first.</span>")
         }
         sb.append("</div>")
         appendHtml(sb.toString())
@@ -961,10 +1052,10 @@ class SessionPanel(
         val firstToken = text.trim().substringBefore(' ').take(40)
         appendHtml(
             "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
-                "<span style='color: #D9B263;'>⚠ <code>${escapeHtml(firstToken)}</code> " +
+                "border-left: 3px solid ${palette.goldHex}; background-color: ${palette.surfaceHex};'>" +
+                "<span style='color: ${palette.goldHex};'>⚠ <code>${escapeHtml(firstToken)}</code> " +
                 "looks like a CLI flag, which this plugin doesn't run.</span><br/>" +
-                "<span style='color: #BCBEC4;'>Use the <b>gear icon</b> below the input to open " +
+                "<span style='color: ${palette.fgHex};'>Use the <b>gear icon</b> below the input to open " +
                 "<b>Settings</b>, or the <b>model / permission chips</b> next to it for " +
                 "per-session overrides. Edit your message and send again to chat with Claude." +
                 "</span></div>"
@@ -1035,7 +1126,7 @@ class SessionPanel(
             sendStopButton.setVariant(AccentButton.Variant.DANGER)
             sendStopButton.toolTipText = "Stop Claude (cancel current request)"
             statusLabel.text = "Claude is thinking..."
-            statusLabel.foreground = JBColor(Color(0xD9, 0x77, 0x57), Color(0xD9, 0x77, 0x57))
+            statusLabel.foreground = palette.accent
             thinkingContent = null
             activeToolName = null
             startThinkingAnimation()
@@ -1049,7 +1140,7 @@ class SessionPanel(
             sendStopButton.setVariant(AccentButton.Variant.ACCENT)
             sendStopButton.toolTipText = "Send message (Enter). Shift+Enter for new line."
             statusLabel.text = "Ready"
-            statusLabel.foreground = JBColor(Color(0x80, 0x80, 0x80), Color(0x80, 0x80, 0x80))
+            statusLabel.foreground = palette.fgMuted
             com.claudecode.platform.SleepInhibitor.stop()
         }
     }
@@ -1111,7 +1202,7 @@ class SessionPanel(
      *  input handles the interaction (keyboard + click + custom answer). */
     private fun renderAskQuestions(pending: PendingAsk) {
         val sb = StringBuilder("<div class='system-msg'>")
-        sb.append("<div style='color:#6897BB;'><b>Claude needs your input</b></div>")
+        sb.append("<div style='color:${palette.linkHex};'><b>Claude needs your input</b></div>")
         pending.questions.forEach { q ->
             sb.append("<div style='margin-top:4px;'>${escapeHtml(q.question)}</div>")
         }
@@ -1233,15 +1324,15 @@ class SessionPanel(
             }
 
             val color = when (tool) {
-                "Edit" -> "#D9B263"
-                "Write" -> "#6A8759"
-                "Bash" -> "#D97757"
-                "Read", "Glob", "Grep" -> "#6897BB"
-                else -> "#808080"
+                "Edit" -> "${palette.goldHex}"
+                "Write" -> "${palette.diffAddFgHex}"
+                "Bash" -> "${palette.accentHex}"
+                "Read", "Glob", "Grep" -> "${palette.linkHex}"
+                else -> "${palette.fgMutedHex}"
             }
 
             val diffHtml = if (diffSummary != null) {
-                "<br/>&nbsp;&nbsp;<span style='color: #808080;'>\u23BF $diffSummary</span>"
+                "<br/>&nbsp;&nbsp;<span style='color: ${palette.fgMutedHex};'>\u23BF $diffSummary</span>"
             } else ""
 
             if (isEdit) {
@@ -1268,7 +1359,7 @@ class SessionPanel(
                 val diffToggleHtml = if (diffData != null) {
                     pendingDiffs[consolidatedDiffId] = buildConsolidatedDiffHtml(lastEditDiffPairs, editLang, filePath)
                     expandedDiffs.add(consolidatedDiffId)
-                    " <a href=\"http://localhost/action/inline-diff/$consolidatedDiffId\" style='color: #808080;'>[\u25BC diff]</a>"
+                    " <a href=\"http://localhost/action/inline-diff/$consolidatedDiffId\" style='color: ${palette.fgMutedHex};'>[\u25BC diff]</a>"
                 } else ""
 
                 val editSummaryHtml = if (diffData != null) {
@@ -1276,7 +1367,7 @@ class SessionPanel(
                     if (lastEditChangedLines > 0) parts.add("~$lastEditChangedLines modified")
                     if (lastEditAddedLines > 0) parts.add("+$lastEditAddedLines added")
                     if (lastEditRemovedLines > 0) parts.add("-$lastEditRemovedLines removed")
-                    "<br/>&nbsp;&nbsp;<span style='color: #808080;'>\u23BF ${parts.joinToString(", ")}</span>"
+                    "<br/>&nbsp;&nbsp;<span style='color: ${palette.fgMutedHex};'>\u23BF ${parts.joinToString(", ")}</span>"
                 } else diffHtml
 
                 appendHtml("<div id='$elementId' class='tool-msg'><span style='color: $color;'>\u23FA</span> ${escapeHtml(displayText)}$diffToggleHtml$editSummaryHtml</div>")
@@ -1294,7 +1385,7 @@ class SessionPanel(
                     inlineDiffId = "diff-${copyCommandCounter++}"
                     pendingDiffs[inlineDiffId!!] = buildInlineDiffHtml(diffData.first, diffData.second, diffLang, filePath)
                     expandedDiffs.add(inlineDiffId!!)
-                    " <a href=\"http://localhost/action/inline-diff/$inlineDiffId\" style='color: #808080;'>[\u25BC diff]</a>"
+                    " <a href=\"http://localhost/action/inline-diff/$inlineDiffId\" style='color: ${palette.fgMutedHex};'>[\u25BC diff]</a>"
                 } else ""
                 appendHtml("<div class='tool-msg'><span style='color: $color;'>\u23FA</span> ${escapeHtml(displayText)}$diffToggleHtml$diffHtml</div>")
                 if (inlineDiffId != null) {
@@ -1314,9 +1405,9 @@ class SessionPanel(
         changedLines: Int,
         editCount: Int
     ): String {
-        val color = "#D9B263"
+        val color = "${palette.goldHex}"
         val arrow = if (expandedDiffs.contains(diffId)) "\u25BC" else "\u25B6"
-        val diffToggleHtml = " <a href=\"http://localhost/action/inline-diff/$diffId\" style='color: #808080;'>[$arrow diff]</a>"
+        val diffToggleHtml = " <a href=\"http://localhost/action/inline-diff/$diffId\" style='color: ${palette.fgMutedHex};'>[$arrow diff]</a>"
 
         val summaryParts = mutableListOf<String>()
         if (changedLines > 0) summaryParts.add("~$changedLines modified")
@@ -1325,7 +1416,7 @@ class SessionPanel(
         val editsLabel = if (editCount > 1) " ($editCount edits)" else ""
         val summary = summaryParts.joinToString(", ") + editsLabel
 
-        val diffHtml = "<br/>&nbsp;&nbsp;<span style='color: #808080;'>\u23BF $summary</span>"
+        val diffHtml = "<br/>&nbsp;&nbsp;<span style='color: ${palette.fgMutedHex};'>\u23BF $summary</span>"
 
         return "<div id='$elementId' class='tool-msg'><span style='color: $color;'>\u23FA</span> ${escapeHtml(displayText)}$diffToggleHtml$diffHtml</div>"
     }
@@ -1379,9 +1470,9 @@ class SessionPanel(
         val pct = (usedTokens * 100.0 / contextWindow).coerceIn(0.0, 100.0)
         ApplicationManager.getApplication().invokeLater {
             val color = when {
-                pct >= 90 -> "#D9534F"   // red — nearly full
-                pct >= 75 -> "#D9B263"   // amber — getting full
-                else -> "#808080"
+                pct >= 90 -> "${palette.errorHex}"   // red — nearly full
+                pct >= 75 -> "${palette.goldHex}"   // amber — getting full
+                else -> "${palette.fgMutedHex}"
             }
             contextLabel.text = "<html><span style='color:$color;'>◑ ${pct.toInt()}% context</span></html>"
             contextLabel.toolTipText =
@@ -1418,12 +1509,12 @@ class SessionPanel(
                     // the selected model is rate-limited or out of credits.
                     appendHtml(
                         "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                            "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
-                            "<span style='color: #D9B263;'>⚠ Claude responded using " +
+                            "border-left: 3px solid ${palette.goldHex}; background-color: ${palette.surfaceHex};'>" +
+                            "<span style='color: ${palette.goldHex};'>⚠ Claude responded using " +
                             "<b>${escapeHtml(constants.shortModelLabel(model))}</b> " +
                             "(<code>${escapeHtml(model)}</code>) instead of your selected " +
                             "<b>${escapeHtml(constants.shortModelLabel(selected))}</b>.</span><br/>" +
-                            "<span style='color: #808080;'>Likely a rate-limit or quota fallback. " +
+                            "<span style='color: ${palette.fgMutedHex};'>Likely a rate-limit or quota fallback. " +
                             "The model dropdown has been updated to reflect the actual model in use.</span>" +
                             "</div>"
                     )
@@ -1457,7 +1548,7 @@ class SessionPanel(
                 lastFailedToolName = null
                 lastFailedElementId = null
                 lastFailedCount = 0
-                appendHtml("<div class='tool-msg'>&nbsp;&nbsp;<span style='color: #6A8759;'>\u2713</span></div>")
+                appendHtml("<div class='tool-msg'>&nbsp;&nbsp;<span style='color: ${palette.diffAddFgHex};'>\u2713</span></div>")
                 return@invokeLater
             }
 
@@ -1515,11 +1606,11 @@ class SessionPanel(
         val tail = buildString {
             if (toolName != null) append(" ${escapeHtml(toolName)}")
             if (snippet != null) append(": ${escapeHtml(snippet)}")
-            if (count > 1) append(" <span style='color: #707070;'>(${count}x)</span>")
+            if (count > 1) append(" <span style='color: ${palette.fgFaintHex};'>(${count}x)</span>")
         }
         return "<div id='$elementId' class='tool-msg'>&nbsp;&nbsp;" +
-            "<span style='color: #FF6B68;'>\u2717 failed</span>" +
-            "<span style='color: #BCBEC4;'>$tail</span>" +
+            "<span style='color: ${palette.errorHex};'>\u2717 failed</span>" +
+            "<span style='color: ${palette.fgHex};'>$tail</span>" +
             "</div>"
     }
 
@@ -1574,8 +1665,8 @@ class SessionPanel(
         val detail = if (!toolInputDetail.isNullOrBlank())
             " \u00b7 attempted <code>${escapeHtml(toolInputDetail.take(160))}</code>" else ""
         appendHtml(
-            "<div class='system-msg' style='border-left:3px solid #D9B263; padding:4px 8px; margin:6px 0;'>" +
-                "<span style='color:#D9B263;'>\u26a0 <code>${escapeHtml(safeToolName)}</code> was blocked by your " +
+            "<div class='system-msg' style='border-left:3px solid ${palette.goldHex}; padding:4px 8px; margin:6px 0;'>" +
+                "<span style='color:${palette.goldHex};'>\u26a0 <code>${escapeHtml(safeToolName)}</code> was blocked by your " +
                 "permission mode (<b>${escapeHtml(currentModeLabel)}</b>)$detail</span></div>"
         )
 
@@ -1596,7 +1687,7 @@ class SessionPanel(
                     "unrestricted" -> switchSessionMode(com.claudecode.ClaudeConstants.PERMISSION_MODE_BYPASS)
                     "deny" -> {
                         choiceBar.clear()
-                        appendHtml("<div class='system-msg' style='color:#808080;'>Kept blocked.</div>")
+                        appendHtml("<div class='system-msg' style='color:${palette.fgMutedHex};'>Kept blocked.</div>")
                         permissionHintShown = false
                     }
                 }
@@ -1657,7 +1748,7 @@ class SessionPanel(
     private fun scheduleRetryAfterGrant(prompt: String, attempt: Int = 0) {
         if (!session.isBusy) {
             appendHtml(
-                "<div class='system-msg' style='color: #6A8759; font-style: italic;'>" +
+                "<div class='system-msg' style='color: ${palette.diffAddFgHex}; font-style: italic;'>" +
                     "↻ Retrying with new permission…" +
                     "</div>"
             )
@@ -1670,7 +1761,7 @@ class SessionPanel(
         }
         if (attempt >= MAX_RETRY_POLL_ATTEMPTS) {
             appendHtml(
-                "<div class='system-msg' style='color: #D9B263;'>" +
+                "<div class='system-msg' style='color: ${palette.goldHex};'>" +
                     "⚠ Could not retry automatically — the previous request is still stopping. " +
                     "Send your message again manually." +
                     "</div>"
@@ -1689,7 +1780,7 @@ class SessionPanel(
     private fun renderGrantResult(result: com.claudecode.project.ProjectAllowlist.Result) {
         if (!result.success) {
             appendHtml(
-                "<div class='system-msg' style='color:#FF6B68;'>\u2717 Could not update " +
+                "<div class='system-msg' style='color:${palette.errorHex};'>\u2717 Could not update " +
                     "<code>${escapeHtml(result.filePath)}</code>: " +
                     "${escapeHtml(result.error ?: "unknown error")}</div>"
             )
@@ -1708,8 +1799,8 @@ class SessionPanel(
         val willRetry = session.messages.any { it.role == "user" }
         val followUp = if (willRetry) "Retrying your message\u2026" else "Send your message again."
         appendHtml(
-            "<div class='system-msg' style='color:#6A8759;'>\u2713 $verb allowlist: " +
-                "<code>${escapeHtml(result.pattern)}</code> \u00b7 <span style='color:#808080;'>$followUp</span></div>"
+            "<div class='system-msg' style='color:${palette.diffAddFgHex};'>\u2713 $verb allowlist: " +
+                "<code>${escapeHtml(result.pattern)}</code> \u00b7 <span style='color:${palette.fgMutedHex};'>$followUp</span></div>"
         )
         permissionHintShown = false
     }
@@ -1728,8 +1819,8 @@ class SessionPanel(
         permissionChip.toolTipText = "Permission mode: " +
             com.claudecode.ClaudeConstants.describePermissionMode(mode)
         appendHtml(
-            "<div class='system-msg' style='color:#6A8759;'>\u2713 Switched permission mode to <b>${escapeHtml(label)}</b> " +
-                "for this session. <span style='color:#808080;'>" +
+            "<div class='system-msg' style='color:${palette.diffAddFgHex};'>\u2713 Switched permission mode to <b>${escapeHtml(label)}</b> " +
+                "for this session. <span style='color:${palette.fgMutedHex};'>" +
                 (if (lastPrompt != null) "Retrying your message\u2026" else "Send a new message to use it.") +
                 " Global default unchanged \u2014 open Settings to make it permanent.</span></div>"
         )
@@ -1825,16 +1916,16 @@ class SessionPanel(
 
         val sb = StringBuilder()
         sb.append("<div id='$RESUME_PREAMBLE_ID'>")
-        sb.append("<div class='system-msg' style='color: #808080; font-style: italic;'>")
+        sb.append("<div class='system-msg' style='color: ${palette.fgMutedHex}; font-style: italic;'>")
         sb.append("↻ Resumed session")
         if (ageStr != null) sb.append(" from $ageStr")
         if (countStr != null) sb.append(" — $countStr")
         sb.append(".")
         when {
-            loading -> sb.append(" <span style='color: #606060;'>Loading transcript…</span>")
-            loadedCount != null -> sb.append(" <span style='color: #606060;'>$loadedCount turn")
+            loading -> sb.append(" <span style='color: ${palette.fgFaintHex};'>Loading transcript…</span>")
+            loadedCount != null -> sb.append(" <span style='color: ${palette.fgFaintHex};'>$loadedCount turn")
                 .append(if (loadedCount == 1) "" else "s").append(" rendered below.</span>")
-            unavailableReason != null -> sb.append(" <span style='color: #606060;'>")
+            unavailableReason != null -> sb.append(" <span style='color: ${palette.fgFaintHex};'>")
                 .append(escapeHtml(unavailableReason)).append("</span>")
         }
         sb.append("</div>")
@@ -1926,7 +2017,7 @@ class SessionPanel(
                 // Defensive: unknown role → render as plain dimmed text
                 // rather than dropping silently.
                 else -> {
-                    sb.append("<div class='system-msg' style='color: #707070;'>")
+                    sb.append("<div class='system-msg' style='color: ${palette.fgFaintHex};'>")
                     sb.append(escapeHtml(m.text))
                     sb.append("</div>")
                 }
@@ -1934,7 +2025,7 @@ class SessionPanel(
         }
 
         sb.append("<div class='system-msg' style='margin: 14px 0 6px 0; padding: 6px 0; ")
-        sb.append("color: #707070; border-top: 1px dashed #3C3F41; border-bottom: 1px dashed #3C3F41; ")
+        sb.append("color: ${palette.fgFaintHex}; border-top: 1px dashed ${palette.surfaceHiHex}; border-bottom: 1px dashed ${palette.surfaceHiHex}; ")
         sb.append("text-align: center; font-style: italic; font-size: 11px;'>")
         sb.append("─── End of previous history ───")
         sb.append("</div>")
@@ -2046,8 +2137,8 @@ class SessionPanel(
     private fun showCliNotFoundHint() {
         appendHtml(
             "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
-                "<span style='color: #D9B263;'>⚠ The Claude CLI couldn't be found.</span><br/>" +
+                "border-left: 3px solid ${palette.goldHex}; background-color: ${palette.surfaceHex};'>" +
+                "<span style='color: ${palette.goldHex};'>⚠ The Claude CLI couldn't be found.</span><br/>" +
                 "Open <a href=\"http://localhost/action/open-settings\">Settings</a> and click " +
                 "<b>Auto-detect</b> next to the CLI path field, or use <b>Browse…</b> to pick the executable. " +
                 "On Windows it's usually <code>%APPDATA%\\npm\\claude.cmd</code>; on macOS/Linux check that " +
@@ -2200,21 +2291,21 @@ class SessionPanel(
         val sb = StringBuilder("<div class='system-msg'><b>Changed files:</b><br/>")
         for ((folder, files) in grouped) {
             val displayFolder = shortenPath(folder)
-            sb.append("<span style='color: #808080;'>$displayFolder/</span><br/>")
+            sb.append("<span style='color: ${palette.fgMutedHex};'>$displayFolder/</span><br/>")
             for ((filePath, action) in files) {
                 val fileName = java.io.File(filePath).name
                 val actionColor = when (action) {
-                    "Created" -> "#6A8759"
-                    "Deleted" -> "#FF6B68"
-                    else -> "#D9B263"
+                    "Created" -> "${palette.diffAddFgHex}"
+                    "Deleted" -> "${palette.errorHex}"
+                    else -> "${palette.goldHex}"
                 }
                 sb.append("&nbsp;&nbsp;<span style='color: $actionColor;'>[$action]</span> ")
                 if (action == "Deleted") {
-                    sb.append("<span style='color: #808080;'>$fileName</span><br/>")
+                    sb.append("<span style='color: ${palette.fgMutedHex};'>$fileName</span><br/>")
                 } else {
-                    sb.append("<a href='file://$filePath' style='color: #6897BB;'>$fileName</a>")
+                    sb.append("<a href='file://$filePath' style='color: ${palette.linkHex};'>$fileName</a>")
                     if (action == "Modified") {
-                        sb.append(" <a href='http://localhost/action/diff/$filePath' style='color: #6897BB;'>[diff]</a>")
+                        sb.append(" <a href='http://localhost/action/diff/$filePath' style='color: ${palette.linkHex};'>[diff]</a>")
                     }
                     sb.append("<br/>")
                 }
@@ -2253,7 +2344,7 @@ class SessionPanel(
         chipScopeHintShown = true
         appendHtml(
             "<div class='system-msg' style='margin: 4px 0; padding: 4px 10px; " +
-                "color: #808080; font-style: italic;'>" +
+                "color: ${palette.fgMutedHex}; font-style: italic;'>" +
                 "ⓘ Chip changes apply to this session only. To set a new default, " +
                 "open <a href=\"http://localhost/action/open-settings\">Settings</a> via the gear icon." +
                 "</div>"
@@ -2301,12 +2392,12 @@ class SessionPanel(
         } else ""
 
         val noteLine = if (!note.isNullOrBlank())
-            "<div style='color: #808080; margin-top: 4px;'>${escapeHtml(note)}</div>" else ""
+            "<div style='color: ${palette.fgMutedHex}; margin-top: 4px;'>${escapeHtml(note)}</div>" else ""
 
         appendHtml(
             "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                "border-left: 3px solid #D9B263; background-color: #2B2D30;'>" +
-                "<span style='color: #D9B263;'>⚠ Model <b>${escapeHtml(constants.shortModelLabel(modelId))}</b> " +
+                "border-left: 3px solid ${palette.goldHex}; background-color: ${palette.surfaceHex};'>" +
+                "<span style='color: ${palette.goldHex};'>⚠ Model <b>${escapeHtml(constants.shortModelLabel(modelId))}</b> " +
                 "(<code>${escapeHtml(modelId)}</code>) is marked deprecated in the live catalog.</span>" +
                 noteLine +
                 swapLink +
@@ -2324,7 +2415,7 @@ class SessionPanel(
         modelChip.toolTipText = "Model: " + if (newModel.isBlank()) "CLI default" else newModel
         appendHtml(
             "<div class='system-msg' style='margin: 4px 0; padding: 4px 10px; " +
-                "color: #6A8759; font-style: italic;'>" +
+                "color: ${palette.diffAddFgHex}; font-style: italic;'>" +
                 "✓ Switched to ${escapeHtml(com.claudecode.ClaudeConstants.shortModelLabel(newModel))} " +
                 "for this session." +
                 "</div>"
@@ -2345,8 +2436,8 @@ class SessionPanel(
             session.effectivePermissionMode()
         )
         appendHtml(
-            "<div class='system-msg' style='border-left:3px solid #D9B263; padding:4px 8px; margin:6px 0;'>" +
-                "<span style='color:#D9B263;'>⚠ Looks like a tool was blocked by your permission mode " +
+            "<div class='system-msg' style='border-left:3px solid ${palette.goldHex}; padding:4px 8px; margin:6px 0;'>" +
+                "<span style='color:${palette.goldHex};'>⚠ Looks like a tool was blocked by your permission mode " +
                 "(<b>${escapeHtml(currentModeLabel)}</b>).</span></div>"
         )
         choiceBar.present(
@@ -2444,7 +2535,7 @@ class SessionPanel(
     private fun buildConsolidatedDiffHtml(diffPairs: List<Pair<String, String>>, lang: String = "", filePath: String? = null): String {
         val keywords = MarkdownRenderer.keywordsForLanguage(lang)
         val sb = StringBuilder()
-        sb.append("<div style='background-color: #2B2D30; padding: 0; margin: 2px 0 4px 16px; font-size: 11px;'>")
+        sb.append("<div style='background-color: ${palette.surfaceHex}; padding: 0; margin: 2px 0 4px 16px; font-size: 11px;'>")
 
         var totalAdded = 0
         var totalRemoved = 0
@@ -2453,7 +2544,7 @@ class SessionPanel(
         val allHunks = StringBuilder()
         for ((index, pair) in diffPairs.withIndex()) {
             if (index > 0) {
-                allHunks.append("<div style='border-top: 1px solid #3C3F41; margin: 0;'></div>")
+                allHunks.append("<div style='border-top: 1px solid ${palette.surfaceHiHex}; margin: 0;'></div>")
             }
             val oldLines = pair.first.lines()
             val newLines = pair.second.lines()
@@ -2467,22 +2558,22 @@ class SessionPanel(
                 )
                 when (op.type) {
                     DiffOp.Type.CONTEXT -> {
-                        allHunks.append("<div style='white-space: pre; padding: 1px 8px;'><span style='color: #808080;'>  </span>$highlighted</div>")
+                        allHunks.append("<div style='white-space: pre; padding: 1px 8px;'><span style='color: ${palette.fgMutedHex};'>  </span>$highlighted</div>")
                     }
                     DiffOp.Type.ADDED -> {
                         totalAdded++
-                        allHunks.append("<div style='white-space: pre; background-color: #1E3520; padding: 1px 8px;'><span style='color: #6A8759;'>+ </span>$highlighted</div>")
+                        allHunks.append("<div style='white-space: pre; background-color: ${palette.diffAddBgHex}; padding: 1px 8px;'><span style='color: ${palette.diffAddFgHex};'>+ </span>$highlighted</div>")
                     }
                     DiffOp.Type.REMOVED -> {
                         totalRemoved++
-                        allHunks.append("<div style='white-space: pre; background-color: #3D2020; padding: 1px 8px;'><span style='color: #FF6B68;'>- </span>$highlighted</div>")
+                        allHunks.append("<div style='white-space: pre; background-color: ${palette.diffRemoveBgHex}; padding: 1px 8px;'><span style='color: ${palette.errorHex};'>- </span>$highlighted</div>")
                     }
                     DiffOp.Type.MODIFIED_OLD -> {
                         totalChanged++
-                        allHunks.append("<div style='white-space: pre; background-color: #3D2020; padding: 1px 8px;'><span style='color: #FF6B68;'>~ </span>$highlighted</div>")
+                        allHunks.append("<div style='white-space: pre; background-color: ${palette.diffRemoveBgHex}; padding: 1px 8px;'><span style='color: ${palette.errorHex};'>~ </span>$highlighted</div>")
                     }
                     DiffOp.Type.MODIFIED_NEW -> {
-                        allHunks.append("<div style='white-space: pre; background-color: #1E3520; padding: 1px 8px;'><span style='color: #6A8759;'>~ </span>$highlighted</div>")
+                        allHunks.append("<div style='white-space: pre; background-color: ${palette.diffAddBgHex}; padding: 1px 8px;'><span style='color: ${palette.diffAddFgHex};'>~ </span>$highlighted</div>")
                     }
                 }
             }
@@ -2491,13 +2582,13 @@ class SessionPanel(
 
         // File header with accurate counts
         val fileLabel = if (filePath != null) shortenPath(filePath) else ""
-        val langLabel = if (lang.isNotEmpty()) "<span style='color: #808080;'>${lang.uppercase().take(4)}</span> " else ""
-        sb.append("<div style='padding: 4px 8px; color: #808080; border-bottom: 1px solid #3C3F41;'>")
-        sb.append("$langLabel<span style='color: #BCBEC4;'>$fileLabel</span> ")
+        val langLabel = if (lang.isNotEmpty()) "<span style='color: ${palette.fgMutedHex};'>${lang.uppercase().take(4)}</span> " else ""
+        sb.append("<div style='padding: 4px 8px; color: ${palette.fgMutedHex}; border-bottom: 1px solid ${palette.surfaceHiHex};'>")
+        sb.append("$langLabel<span style='color: ${palette.fgHex};'>$fileLabel</span> ")
         val parts = mutableListOf<String>()
-        if (totalAdded > 0) parts.add("<span style='color: #6A8759;'>+$totalAdded</span>")
-        if (totalRemoved > 0) parts.add("<span style='color: #FF6B68;'>-$totalRemoved</span>")
-        if (totalChanged > 0) parts.add("<span style='color: #D9B263;'>~$totalChanged</span>")
+        if (totalAdded > 0) parts.add("<span style='color: ${palette.diffAddFgHex};'>+$totalAdded</span>")
+        if (totalRemoved > 0) parts.add("<span style='color: ${palette.errorHex};'>-$totalRemoved</span>")
+        if (totalChanged > 0) parts.add("<span style='color: ${palette.goldHex};'>~$totalChanged</span>")
         sb.append(parts.joinToString(" "))
         sb.append("</div>")
         sb.append(allHunks)
