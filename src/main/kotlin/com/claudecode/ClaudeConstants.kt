@@ -144,6 +144,36 @@ object ClaudeConstants {
     }
 
     /**
+     * Reduces a provider-qualified model ID to its canonical Anthropic ID so
+     * IDs from different sources can be compared.
+     *
+     * Bedrock and Vertex take an inference-profile ID (what the user selects,
+     * e.g. `us.anthropic.claude-opus-5[1m]`) but report back the plain model
+     * name (`claude-opus-5`). Comparing those raw strings makes every
+     * Bedrock/Vertex turn look like a fallback. Strips, in order:
+     *   - a `[1m]` (or similar) context-window suffix
+     *   - everything up to and including the `anthropic.` vendor segment,
+     *     which also removes any `us.` / `eu.` / `apac.` / `global.`
+     *     cross-region routing prefix without having to enumerate them
+     *   - a Bedrock `-v1:0` style version suffix
+     */
+    fun canonicalModelId(model: String): String {
+        if (model.isBlank()) return model
+        var id = model.trim()
+        id = id.substringBefore('[')
+        if (id.contains("anthropic.")) id = id.substringAfterLast("anthropic.")
+        id = id.replace(Regex("-v\\d+:\\d+$"), "")
+        return id
+    }
+
+    /**
+     * True when [selected] and [reported] name the same underlying model and
+     * only differ by provider decoration — i.e. not a real model fallback.
+     */
+    fun isSameModel(selected: String, reported: String): Boolean =
+        canonicalModelId(selected) == canonicalModelId(reported)
+
+    /**
      * Friendly model name for chip-row dropdown. Empty string → "Default"
      * (CLI's own choice). Known IDs collapse to their friendly label from
      * the live catalog (which the plugin refreshes from the published
