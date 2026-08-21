@@ -69,6 +69,88 @@ class ClaudeConstantsTest {
     }
 
     @Nested
+    inner class CanonicalModelId {
+        @Test
+        fun `plain model id is unchanged`() {
+            assertEquals("claude-opus-5", ClaudeConstants.canonicalModelId("claude-opus-5"))
+        }
+
+        @Test
+        fun `blank is unchanged`() {
+            assertEquals("", ClaudeConstants.canonicalModelId(""))
+        }
+
+        @Test
+        fun `strips bedrock region prefix and vendor segment`() {
+            assertEquals("claude-opus-5", ClaudeConstants.canonicalModelId("us.anthropic.claude-opus-5"))
+            assertEquals("claude-opus-5", ClaudeConstants.canonicalModelId("eu.anthropic.claude-opus-5"))
+            assertEquals("claude-opus-5", ClaudeConstants.canonicalModelId("apac.anthropic.claude-opus-5"))
+        }
+
+        @Test
+        fun `strips context window suffix`() {
+            assertEquals("claude-opus-5", ClaudeConstants.canonicalModelId("claude-opus-5[1m]"))
+        }
+
+        @Test
+        fun `strips bedrock version suffix`() {
+            assertEquals("claude-opus-5", ClaudeConstants.canonicalModelId("anthropic.claude-opus-5-v1:0"))
+        }
+
+        @Test
+        fun `strips full bedrock inference profile id`() {
+            assertEquals("claude-opus-5", ClaudeConstants.canonicalModelId("us.anthropic.claude-opus-5[1m]"))
+        }
+
+        @Test
+        fun `strips longer region prefixes`() {
+            assertEquals("claude-opus-5", ClaudeConstants.canonicalModelId("global.anthropic.claude-opus-5"))
+        }
+
+        @Test
+        fun `plain anthropic model ids are fixed points`() {
+            // Guards the regexes against mangling real IDs — dated suffixes
+            // like -20251001 and version-looking segments must survive.
+            listOf(
+                ClaudeConstants.MODEL_OPUS_47,
+                ClaudeConstants.MODEL_OPUS,
+                ClaudeConstants.MODEL_SONNET,
+                ClaudeConstants.MODEL_HAIKU,
+                ClaudeConstants.MODEL_SONNET_PREV,
+                "claude-opus-5",
+                "claude-sonnet-5",
+                "claude-fable-5",
+            ).forEach {
+                assertEquals(it, ClaudeConstants.canonicalModelId(it), "should be unchanged: $it")
+            }
+        }
+    }
+
+    @Nested
+    inner class IsSameModel {
+        @Test
+        fun `bedrock profile id matches reported canonical id`() {
+            assertTrue(ClaudeConstants.isSameModel("us.anthropic.claude-opus-5[1m]", "claude-opus-5"))
+        }
+
+        @Test
+        fun `identical ids match`() {
+            assertTrue(ClaudeConstants.isSameModel("claude-opus-5", "claude-opus-5"))
+        }
+
+        @Test
+        fun `genuinely different models do not match`() {
+            assertFalse(ClaudeConstants.isSameModel("us.anthropic.claude-opus-5[1m]", "claude-haiku-4-5-20251001"))
+            assertFalse(ClaudeConstants.isSameModel("claude-opus-5", "claude-opus-4-6"))
+        }
+
+        @Test
+        fun `blank selection does not match a real model`() {
+            assertFalse(ClaudeConstants.isSameModel("", "claude-opus-5"))
+        }
+    }
+
+    @Nested
     inner class AvailableModels {
         @Test
         fun `available models contains empty string as first element`() {

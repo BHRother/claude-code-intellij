@@ -1498,27 +1498,39 @@ class SessionPanel(
             // Skip the divergence check, chip update, and custom-model save.
             if (constants.isPlaceholderModel(model)) return@invokeLater
             val selected = selectedModelForDivergenceCheck
-            val diverged = selected.isNotBlank() && selected != model
+            // Bedrock/Vertex report the canonical model name while the user
+            // selected a provider-qualified inference-profile ID. Same model,
+            // different spelling — comparing raw strings flags every turn as a
+            // fallback and then overwrites the user's profile ID below.
+            if (constants.isSameModel(selected, model)) return@invokeLater
 
-            if (diverged) {
-                val pair = selected to model
-                if (warnedModelPairs.add(pair)) {
-                    // First time we see this (selected → actual) divergence in
-                    // this session. Surface a one-line warn banner so the user
-                    // sees Claude fell back to a different model — common when
-                    // the selected model is rate-limited or out of credits.
-                    appendHtml(
-                        "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
-                            "border-left: 3px solid ${palette.goldHex}; background-color: ${palette.surfaceHex};'>" +
-                            "<span style='color: ${palette.goldHex};'>⚠ Claude responded using " +
-                            "<b>${escapeHtml(constants.shortModelLabel(model))}</b> " +
-                            "(<code>${escapeHtml(model)}</code>) instead of your selected " +
-                            "<b>${escapeHtml(constants.shortModelLabel(selected))}</b>.</span><br/>" +
-                            "<span style='color: ${palette.fgMutedHex};'>Likely a rate-limit or quota fallback. " +
-                            "The model dropdown has been updated to reflect the actual model in use.</span>" +
-                            "</div>"
-                    )
-                }
+            // "Default" is a deliberate choice: let the CLI (or ANTHROPIC_MODEL)
+            // resolve the model per turn. Reflect what answered in the chip's
+            // tooltip, but don't pin modelOverride — that would silently turn
+            // Default into an explicit --model on the next message.
+            if (selected.isBlank()) {
+                modelChip.toolTipText = "Model: CLI default (responding: $model)"
+                return@invokeLater
+            }
+
+            // A real divergence: the user pinned a specific model and a
+            // different one answered.
+            if (warnedModelPairs.add(selected to model)) {
+                // First time we see this (selected → actual) divergence in
+                // this session. Surface a one-line warn banner so the user
+                // sees Claude fell back to a different model — common when
+                // the selected model is rate-limited or out of credits.
+                appendHtml(
+                    "<div class='system-msg' style='margin: 6px 0; padding: 6px 10px; " +
+                        "border-left: 3px solid ${palette.goldHex}; background-color: ${palette.surfaceHex};'>" +
+                        "<span style='color: ${palette.goldHex};'>⚠ Claude responded using " +
+                        "<b>${escapeHtml(constants.shortModelLabel(model))}</b> " +
+                        "(<code>${escapeHtml(model)}</code>) instead of your selected " +
+                        "<b>${escapeHtml(constants.shortModelLabel(selected))}</b>.</span><br/>" +
+                        "<span style='color: ${palette.fgMutedHex};'>Likely a rate-limit or quota fallback. " +
+                        "The model dropdown has been updated to reflect the actual model in use.</span>" +
+                        "</div>"
+                )
             }
 
             // Always: refresh chip to mirror the model actually serving requests,
